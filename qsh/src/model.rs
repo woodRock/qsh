@@ -17,12 +17,13 @@ impl QwenRMSNorm {
     }
 
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
+        let dtype = x.dtype();
         let x_float = x.to_dtype(DType::F32)?;
         let variance = x_float.powf(2.0)?.mean_keepdim(D::Minus1)?;
         let x_normed = x_float.broadcast_mul(&(variance + self.eps)?.sqrt()?.recip()?)?;
         let w = self.weight.to_dtype(DType::F32)?;
-        let output = x_normed.broadcast_mul(&(w + 1.0)?)?;
-        output.to_dtype(x.dtype())
+        let output = x_normed.broadcast_mul(&(w + 1.0)?.to_dtype(DType::F32)?)?;
+        output.to_dtype(dtype)
     }
 }
 
@@ -153,22 +154,18 @@ impl VisionEncoder {
             let dtype = x.dtype();
             let v_rot_dim = VIS_HEAD_DIM / 2;
             let inv_freq: Vec<f32> = (0..v_rot_dim/2).map(|i| 1.0 / 10000.0f32.powf((i as f32 * 2.0) / v_rot_dim as f32)).collect();
-            let inv_freq = Tensor::new(inv_freq, &dev)?;
-            let t = Tensor::arange(0u32, seq as u32, &dev)?.to_dtype(DType::F32)?;
+            let inv_freq = Tensor::new(inv_freq, &dev)?.to_dtype(dtype)?;
+            let t = Tensor::arange(0u32, seq as u32, &dev)?.to_dtype(dtype)?;
             let freqs = t.unsqueeze(1)?.matmul(&inv_freq.unsqueeze(0)?)?;
             let emb = Tensor::cat(&[&freqs, &freqs], D::Minus1)?;
             let cos = emb.cos()?.unsqueeze(0)?.unsqueeze(0)?.to_dtype(dtype)?;
             let sin = emb.sin()?.unsqueeze(0)?.unsqueeze(0)?.to_dtype(dtype)?;
             
-            // Vision RoPE is applied to each coordinate (2D)
-            // Python: rotary_pos_emb = self.rot_pos_emb(grid_thw) -> (total_tokens, 24)
-            // Then it's Cat'd with itself -> 48.
-            // My simplified version: just use 1D RoPE over the sequence for now.
             q = apply_rope(&q, &cos, &sin)?;
             k = apply_rope(&k, &cos, &sin)?;
 
             let scale = 1.0 / (VIS_HEAD_DIM as f64).sqrt();
-            let attn_w = (q.matmul(&k.transpose(2, 3)?)? * scale)?;
+            let attn_w = q.matmul(&k.transpose(2, 3)?)?.affine(scale, 0.0)?.to_dtype(dtype)?;
             let attn_w = candle_nn::ops::softmax(&attn_w, D::Minus1)?;
             let attn_out = attn_w.matmul(&v)?.transpose(1, 2)?.reshape((bs, seq, VIS_HIDDEN))?;
             let attn_out = block.attn_proj.forward(&attn_out)?;
@@ -196,7 +193,8 @@ fn rotate_half(x: &Tensor) -> Result<Tensor> {
 }
 
 fn apply_rope(t: &Tensor, cos: &Tensor, sin: &Tensor) -> Result<Tensor> {
-    t.broadcast_mul(cos)? + rotate_half(t)?.broadcast_mul(sin)?
+    let dtype = t.dtype();
+    t.broadcast_mul(&cos.to_dtype(dtype)?)? + rotate_half(t)?.broadcast_mul(&sin.to_dtype(dtype)?)?
 }
 
 struct FullAttention {
@@ -254,8 +252,8 @@ impl FullAttention {
         // Qwen 3.5 RoPE: partial_rotary_factor=0.25, rope_theta=1e7
         let rotary_dim = (self.head_dim as f64 * 0.25) as usize;
         let inv_freq: Vec<f32> = (0..rotary_dim/2).map(|i| 1.0 / 10000000.0f32.powf((i as f32 * 2.0) / rotary_dim as f32)).collect();
-        let inv_freq = Tensor::new(inv_freq, device)?;
-        let t = (Tensor::arange(0u32, s as u32, device)?.to_dtype(DType::F32)? + start_pos as f64)?;
+        let inv_freq = Tensor::new(inv_freq, device)?.to_dtype(dtype)?;
+        let t = (Tensor::arange(0u32, s as u32, device)?.to_dtype(DType::F32)? + start_pos as f64)?.to_dtype(dtype)?;
         let freqs = t.unsqueeze(1)?.matmul(&inv_freq.unsqueeze(0)?)?;
         let emb = Tensor::cat(&[&freqs, &freqs], D::Minus1)?;
         let cos = emb.cos()?.unsqueeze(0)?.unsqueeze(0)?.to_dtype(dtype)?;
@@ -278,26 +276,30 @@ impl FullAttention {
         let v_rep = if self.num_kv_heads != self.num_heads { repeat_interleave(&v, self.num_heads / self.num_kv_heads, 1)? } else { v };
 
         let scale = 1.0 / (self.head_dim as f64).sqrt();
-        let mut attn_weights = (q.matmul(&k_rep.transpose(2, 3)?)? * scale)?;
+        let mut attn_weights = q.matmul(&k_rep.transpose(2, 3)?)?.affine(scale, 0.0)?.to_dtype(dtype)?;
 
         if seq_len > 1 {
             let mask_row = Tensor::arange(0u32, seq_len as u32, device)?.unsqueeze(0)?.broadcast_as((seq_len, seq_len))?;
             let mask_col = Tensor::arange(0u32, seq_len as u32, device)?.unsqueeze(1)?.broadcast_as((seq_len, seq_len))?;
             let causal_mask = mask_row.ge(&mask_col)?.unsqueeze(0)?.unsqueeze(0)?.broadcast_as(attn_weights.shape())?;
-            attn_weights = causal_mask.where_cond(&attn_weights, &Tensor::full(f32::NEG_INFINITY, attn_weights.shape(), device)?)?;
+            let neg_inf = Tensor::full(f32::NEG_INFINITY, attn_weights.shape(), device)?.to_dtype(dtype)?;
+            attn_weights = causal_mask.where_cond(&attn_weights, &neg_inf)?;
         }
 
         let attn_weights = candle_nn::ops::softmax(&attn_weights, D::Minus1)?;
         let out = attn_weights.matmul(&v_rep)?.transpose(1, 2)?.reshape((b, seq_len, self.num_heads * self.head_dim))?;
-        let out = (out * candle_nn::ops::sigmoid(&gate)?)?;
+        let gate_val = candle_nn::ops::sigmoid(&gate)?.to_dtype(dtype)?;
+        let out = out.broadcast_mul(&gate_val)?;
         self.o_proj.forward(&out)
     }
 }
 
 fn l2norm(x: &Tensor) -> Result<Tensor> {
-    let sum_sq = x.powf(2.0)?.sum_keepdim(D::Minus1)?;
+    let dtype = x.dtype();
+    let x_f32 = x.to_dtype(DType::F32)?;
+    let sum_sq = x_f32.powf(2.0)?.sum_keepdim(D::Minus1)?;
     let inv_norm = (sum_sq + 1e-6)?.sqrt()?.recip()?;
-    x.broadcast_mul(&inv_norm)
+    x_f32.broadcast_mul(&inv_norm)?.to_dtype(dtype)
 }
 
 struct LinearAttention {
@@ -325,12 +327,12 @@ impl LinearAttention {
         let in_proj_z = linear_no_bias(hidden, num_heads * head_dim, vb.pp("in_proj_z"))?;
         let in_proj_a = linear_no_bias(hidden, num_heads, vb.pp("in_proj_a"))?;
         let in_proj_b = linear_no_bias(hidden, num_heads, vb.pp("in_proj_b"))?;
-        let dt_bias = vb.get(num_heads, "dt_bias")?;
-        let a_log = vb.get(num_heads, "A_log")?;
-        let conv_w = vb.get((conv_dim, 1, 4), "conv1d.weight")?;
+        let dt_bias = vb.get(num_heads, "dt_bias")?.to_dtype(vb.dtype())?;
+        let a_log = vb.get(num_heads, "A_log")?.to_dtype(vb.dtype())?;
+        let conv_w = vb.get((conv_dim, 1, 4), "conv1d.weight")?.to_dtype(vb.dtype())?;
         let conv1d = candle_nn::Conv1d::new(conv_w, None, candle_nn::Conv1dConfig { groups: conv_dim, padding: 0, ..Default::default() });
         let out_proj = linear_no_bias(num_heads * head_dim, hidden, vb.pp("out_proj"))?;
-        let norm_weight = vb.get(head_dim, "norm.weight")?;
+        let norm_weight = vb.get(head_dim, "norm.weight")?.to_dtype(vb.dtype())?;
         Ok(Self { in_proj_qkv, in_proj_z, in_proj_a, in_proj_b, dt_bias, a_log, conv1d, out_proj, norm_weight, norm_eps: cfg.rms_norm_eps, num_heads, head_dim })
     }
 
@@ -376,22 +378,22 @@ impl LinearAttention {
         
         let dt = a_gate.broadcast_add(&self.dt_bias)?;
         let softplus_dt = (dt.exp()? + 1.0)?.log()?;
-        let g = self.a_log.exp()?.neg()?.broadcast_mul(&softplus_dt.to_dtype(DType::F32)?)?.transpose(1, 2)?;
+        let g = self.a_log.exp()?.neg()?.broadcast_mul(&softplus_dt.to_dtype(DType::F32)?)?.transpose(1, 2)?.to_dtype(x.dtype())?;
         
         let mut out_list = Vec::with_capacity(seq);
         let scale = 1.0 / (self.head_dim as f64).sqrt();
-        let q_scaled = (query * scale)?;
+        let q_scaled = query.affine(scale, 0.0)?.to_dtype(x.dtype())?;
 
         for i in 0..seq {
             let q_t = q_scaled.i((.., .., i, ..))?;
             let k_t = key.i((.., .., i, ..))?;
             let v_t = value.i((.., .., i, ..))?;
-            let g_t = g.i((.., .., i))?.exp()?.unsqueeze(2)?.unsqueeze(3)?;
-            let beta_t = b_gate.i((.., i, ..))?.unsqueeze(2)?;
+            let g_t = g.i((.., .., i))?.exp()?.unsqueeze(2)?.unsqueeze(3)?.to_dtype(x.dtype())?;
+            let beta_t = b_gate.i((.., i, ..))?.unsqueeze(2)?.to_dtype(x.dtype())?;
 
-            current_recurrent = current_recurrent.broadcast_mul(&g_t)?;
+            current_recurrent = current_recurrent.broadcast_mul(&g_t.to_dtype(x.dtype())?)?;
             let kv_mem = k_t.unsqueeze(D::Minus2)?.matmul(&current_recurrent)?.squeeze(D::Minus2)?;
-            let delta = (v_t - kv_mem)?.broadcast_mul(&beta_t)?;
+            let delta = (v_t - kv_mem)?.broadcast_mul(&beta_t.to_dtype(x.dtype())?)?;
             current_recurrent = (current_recurrent + k_t.unsqueeze(D::Minus1)?.matmul(&delta.unsqueeze(D::Minus2)?)?)?;
             out_list.push(q_t.unsqueeze(D::Minus2)?.matmul(&current_recurrent)?.squeeze(D::Minus2)?.unsqueeze(2)?);
         }
@@ -419,7 +421,10 @@ impl MLP {
         Ok(Self { gate_proj: linear_no_bias(hidden, inter, vb.pp("gate_proj"))?, up_proj: linear_no_bias(hidden, inter, vb.pp("up_proj"))?, down_proj: linear_no_bias(inter, hidden, vb.pp("down_proj"))? })
     }
     fn forward(&self, x: &Tensor) -> Result<Tensor> {
-        let out = (candle_nn::ops::silu(&self.gate_proj.forward(x)?)? * self.up_proj.forward(x)?)?;
+        let dtype = x.dtype();
+        let gate = candle_nn::ops::silu(&self.gate_proj.forward(x)?)?.to_dtype(dtype)?;
+        let up = self.up_proj.forward(x)?.to_dtype(dtype)?;
+        let out = gate.broadcast_mul(&up)?;
         self.down_proj.forward(&out)
     }
 }

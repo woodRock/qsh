@@ -73,7 +73,7 @@ impl AIModel {
         let tokens = self.tokenizer.encode(prompt, true).map_err(anyhow::Error::msg)?;
         let mut token_ids = tokens.get_ids().to_vec();
         let mut generated = String::new();
-        // Use recommended sampling parameters for non-thinking mode
+        // Use recommended sampling parameters
         let mut logits_processor = LogitsProcessor::new(299792458, Some(1.0), Some(1.0));
         
         let config = Qwen35Config::default();
@@ -84,8 +84,6 @@ impl AIModel {
         // Pre-fill
         let input_ids = Tensor::new(&token_ids[..], &self.device)?.unsqueeze(0)?;
         let mut logits = self.model.forward(Some(&input_ids), image, &mut layer_states)?;
-
-        let mut in_thinking = false;
 
         for _ in 0..max_tokens {
             let next_token = logits_processor.sample(&logits.squeeze(0)?)?;
@@ -98,17 +96,9 @@ impl AIModel {
             if let Some(text) = self.tokenizer.decode(&[next_token], true).ok() {
                 generated.push_str(&text);
                 
-                if text.contains("<think>") {
-                    in_thinking = true;
-                }
-                
-                if !quiet && !in_thinking {
+                if !quiet {
                     print!("{}", text);
                     io::stdout().flush()?;
-                }
-                
-                if text.contains("</think>") {
-                    in_thinking = false;
                 }
             }
 
@@ -133,7 +123,7 @@ impl AIModel {
             .affine(1.0 / 255.0, 0.0)?;
         let tensor = Tensor::cat(&[&tensor, &tensor], 0)?.unsqueeze(0)?; // [1, 6, 224, 224]
             
-        let prompt = format!("<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\nQuestion: {} Answer YES or NO.<|im_end|>\n<|im_start|>assistant\n", query);
+        let prompt = format!("<|im_start|>system\nYou are a helpful assistant. Provide YES or NO.<|im_end|>\n<|im_start|>user\nQuestion: {} Answer YES or NO.<|im_end|>\n<|im_start|>assistant\n", query);
         let response = self.generate(&prompt, Some(&tensor), 5, true)?;
         Ok(response.trim().to_uppercase().contains("YES"))
     }
@@ -158,7 +148,7 @@ async fn main() -> Result<()> {
             for line in stdin.lock().lines() {
                 let line = line?;
                 if line.trim().is_empty() { continue; }
-                let prompt = format!("<|im_start|>system\nYou are a text filter. Answer YES or NO. NO Chinese.<|im_end|>\n<|im_start|>user\nIs the following line related to '{}'?\nLine: {}<|im_end|>\n<|im_start|>assistant\n", query, line);
+                let prompt = format!("<|im_start|>system\nYou are a text filter. Answer YES or NO.<|im_end|>\n<|im_start|>user\nIs the following line related to '{}'?\nLine: {}<|im_end|>\n<|im_start|>assistant\n", query, line);
                 let response = model.generate(&prompt, None, 5, true)?;
                 if response.trim().to_uppercase().contains("YES") {
                     println!("{}", line);
@@ -179,23 +169,18 @@ async fn main() -> Result<()> {
         None => {
             if let Some(prompt) = cli.prompt {
                 let model = AIModel::load()?;
-                let system_prompt = "You are a Unix shell expert. Provide valid Bash code for the user's request.";
+                let system_prompt = "You are a Unix shell expert. Provide only the valid Bash command for the user's request. No explanation, no thinking block.";
                 let full_prompt = format!(
                     "<|im_start|>system\n{}<|im_end|>\n\
                      <|im_start|>user\nList files<|im_end|>\n\
-                     <|im_start|>assistant\n<think>\nThe user wants to list files in the current directory. The command is ls.\n</think>\nls<|im_end|>\n\
+                     <|im_start|>assistant\nls<|im_end|>\n\
                      <|im_start|>user\n{}<|im_end|>\n\
-                     <|im_start|>assistant\n<think>\n", 
+                     <|im_start|>assistant\n", 
                     system_prompt, prompt
                 );
 
                 let mut command = model.generate(&full_prompt, None, 512, false)?;
 
-                // Extract command after </think>
-                if let Some(pos) = command.find("</think>") {
-                    command = command[(pos + 8)..].trim().to_string();
-                }
-                
                 // Remove any trailing <|im_end|>
                 if let Some(pos) = command.find("<|im_end|>") {
                     command = command[..pos].trim().to_string();

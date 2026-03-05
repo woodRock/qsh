@@ -16,7 +16,7 @@
 Ensure you have [Rust](https://rustup.rs/) installed, then run:
 
 ```bash
-git clone https://github.com/yourusername/qsh.git && cd qsh/qsh && cargo install --path . && qsh setup
+curl -sSL https://raw.githubusercontent.com/woodRock/qsh/main/setup.sh | sh
 ```
 
 ---
@@ -66,7 +66,7 @@ ls screenshots/*.png | qsh vision "is there code visible in this image?"
 
 1. **Clone & Build:**
    ```bash
-   git clone https://github.com/yourusername/qsh.git
+   git clone https://github.com/woodRock/qsh.git
    cd qsh/qsh
    cargo build --release
    ```
