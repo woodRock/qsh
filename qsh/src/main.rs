@@ -73,8 +73,8 @@ impl AIModel {
         let tokens = self.tokenizer.encode(prompt, true).map_err(anyhow::Error::msg)?;
         let mut token_ids = tokens.get_ids().to_vec();
         let mut generated = String::new();
-        // Greedy decoding for better stability
-        let mut logits_processor = LogitsProcessor::new(299792458, None, None);
+        // Use recommended sampling parameters for non-thinking mode
+        let mut logits_processor = LogitsProcessor::new(299792458, Some(1.0), Some(1.0));
         
         let config = Qwen35Config::default();
         let mut layer_states: Vec<LayerState> = vec![LayerState::None; config.num_hidden_layers];
@@ -85,6 +85,8 @@ impl AIModel {
         let input_ids = Tensor::new(&token_ids[..], &self.device)?.unsqueeze(0)?;
         let mut logits = self.model.forward(Some(&input_ids), image, &mut layer_states)?;
 
+        let mut in_thinking = false;
+
         for _ in 0..max_tokens {
             let next_token = logits_processor.sample(&logits.squeeze(0)?)?;
             token_ids.push(next_token);
@@ -94,14 +96,22 @@ impl AIModel {
             }
 
             if let Some(text) = self.tokenizer.decode(&[next_token], true).ok() {
-                if !quiet {
+                generated.push_str(&text);
+                
+                if text.contains("<think>") {
+                    in_thinking = true;
+                }
+                
+                if !quiet && !in_thinking {
                     print!("{}", text);
                     io::stdout().flush()?;
                 }
-                generated.push_str(&text);
+                
+                if text.contains("</think>") {
+                    in_thinking = false;
+                }
             }
 
-            // Recurrent step
             let input_ids = Tensor::new(&[next_token], &self.device)?.unsqueeze(0)?;
             logits = self.model.forward(Some(&input_ids), None, &mut layer_states)?;
         }
@@ -169,39 +179,71 @@ async fn main() -> Result<()> {
         None => {
             if let Some(prompt) = cli.prompt {
                 let model = AIModel::load()?;
-                let system_prompt = "You are a Unix shell expert. Output ONLY valid Bash code. NO explanation, NO markdown, NO Chinese. If you think, keep it extremely brief.";
-                let full_prompt = format!("<|im_start|>system\n{}<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n<think>\n", system_prompt, prompt);
+                let system_prompt = "You are a Unix shell expert. Provide valid Bash code for the user's request.";
+                let full_prompt = format!(
+                    "<|im_start|>system\n{}<|im_end|>\n\
+                     <|im_start|>user\nList files<|im_end|>\n\
+                     <|im_start|>assistant\n<think>\nThe user wants to list files in the current directory. The command is ls.\n</think>\nls<|im_end|>\n\
+                     <|im_start|>user\n{}<|im_end|>\n\
+                     <|im_start|>assistant\n<think>\n", 
+                    system_prompt, prompt
+                );
 
-                let command = model.generate(&full_prompt, None, 512, false)?;
+                let mut command = model.generate(&full_prompt, None, 512, false)?;
 
+                // Extract command after </think>
+                if let Some(pos) = command.find("</think>") {
+                    command = command[(pos + 8)..].trim().to_string();
+                }
+                
+                // Remove any trailing <|im_end|>
+                if let Some(pos) = command.find("<|im_end|>") {
+                    command = command[..pos].trim().to_string();
+                }
+
+                // Strip markdown code blocks if the model wrapped the command in them
+                if let Some(start_idx) = command.find("```") {
+                    let rest = &command[start_idx + 3..];
+                    // Skip the language identifier if present (e.g., "bash\n")
+                    let start_of_content = rest.find('\n').map(|i| i + 1).unwrap_or(0);
+                    let content = &rest[start_of_content..];
+                    if let Some(end_idx) = content.find("```") {
+                        command = content[..end_idx].trim().to_string();
+                    } else {
+                        // If no closing backticks, just take the rest of the content
+                        command = content.trim().to_string();
+                    }
+                }
+                
+                if command.is_empty() {
+                    println!("Error: Model failed to generate a command.");
+                    return Ok(());
+                }
+                
+                println!("\nSuggested Command: {}", command);
                 
                 loop {
-                    print!("\n[E]xecute? [e]xplain? [A]bort? ");
+                    print!("[E]xecute, [e]xplain, [a]bort? ");
                     io::stdout().flush()?;
                     let mut input = String::new();
                     io::stdin().read_line(&mut input)?;
-                    match input.trim().to_lowercase().as_str() {
-                        "e" => {
-                            if input.trim() == "e" {
-                                let explain_prompt = format!("<|im_start|>system\nYou are a Unix shell expert.<|im_end|>\n<|im_start|>user\nExplain this Bash command briefly: {}<|im_end|>\n<|im_start|>assistant\n", command);
-                                println!("\n> Explanation:");
-                                model.generate(&explain_prompt, None, 100, false)?;
-                            } else {
-                                println!("Executing: {}", command);
-                                std::process::Command::new("bash").arg("-c").arg(&command).spawn()?.wait()?;
-                                break;
-                            }
-                        }
-                        "a" => { println!("Aborted."); break; }
-                        _ => {
-                            if input.trim().to_uppercase() == "E" || input.trim().is_empty() {
-                                println!("Executing: {}", command);
-                                std::process::Command::new("bash").arg("-c").arg(&command).spawn()?.wait()?;
-                                break;
-                            }
-                            println!("Aborted.");
-                            break;
-                        }
+                    let choice = input.trim();
+                    
+                    if choice == "e" {
+                        let explain_prompt = format!("<|im_start|>system\nYou are a Unix shell expert.<|im_end|>\n<|im_start|>user\nExplain this Bash command briefly: {}<|im_end|>\n<|im_start|>assistant\n", command);
+                        println!("\n> Explanation:");
+                        model.generate(&explain_prompt, None, 100, false)?;
+                        println!();
+                        continue;
+                    } else if choice == "E" || choice.is_empty() {
+                        println!("Executing: {}", command);
+                        std::process::Command::new("bash").arg("-c").arg(&command).spawn()?.wait()?;
+                        break;
+                    } else if choice.to_lowercase() == "a" {
+                        println!("Aborted.");
+                        break;
+                    } else {
+                        println!("Invalid option.");
                     }
                 }
             }
