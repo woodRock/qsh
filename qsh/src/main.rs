@@ -59,12 +59,37 @@ struct PythonBridge {
 
 impl PythonBridge {
     fn spawn() -> Result<Self> {
-        let mut child = Command::new("/Users/woodj/Desktop/qsh/qenv/bin/python3")
-            .arg("src/inference.py")
+        let exe_path = std::env::current_exe()?;
+        let exe_dir = exe_path.parent().context("Failed to get exe directory")?;
+        
+        // Try relative to exe first (for target/release development)
+        let mut python_path = exe_dir.join("qenv/bin/python3");
+        let mut inference_path = exe_dir.join("src/inference.py");
+
+        if !python_path.exists() {
+            // Try one level up (if installed in bin/ and qenv is in prefix/)
+            python_path = exe_dir.parent().context("Failed to get parent dir")?.join("qenv/bin/python3");
+            inference_path = exe_dir.parent().context("Failed to get parent dir")?.join("src/inference.py");
+        }
+        
+        if !python_path.exists() {
+            // Try current working directory (for development)
+            python_path = std::path::PathBuf::from("qenv/bin/python3");
+            inference_path = std::path::PathBuf::from("src/inference.py");
+        }
+        
+        if !python_path.exists() {
+            // Fallback to absolute development path
+            python_path = std::path::PathBuf::from("/Users/woodj/Desktop/qsh/qenv/bin/python3");
+            inference_path = std::path::PathBuf::from("/Users/woodj/Desktop/qsh/qsh/src/inference.py");
+        }
+
+        let mut child = Command::new(&python_path)
+            .arg(&inference_path)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .spawn()
-            .context("Failed to start Python inference script. Ensure transformers, torch, qwen-vl-utils are installed in qenv.")?;
+            .context(format!("Failed to start Python inference script at {:?}. Ensure transformers, torch, qwen-vl-utils are installed in qenv.", inference_path))?;
         
         let stdout = child.stdout.take().context("Failed to capture stdout")?;
         let mut reader = io::BufReader::new(stdout);

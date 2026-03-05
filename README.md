@@ -1,19 +1,19 @@
 # 🐚 qsh: Qwen Shell
 
 [![Rust](https://img.shields.io/badge/language-Rust-orange.svg)](https://www.rust-lang.org/)
+[![Python](https://img.shields.io/badge/language-Python-blue.svg)](https://www.python.org/)
 [![Model](https://img.shields.io/badge/Model-Qwen--3.5--0.8B-blue.svg)](https://huggingface.co/Qwen/Qwen3.5-0.8B)
 [![License](https://img.shields.io/badge/License-Apache%202.0-green.svg)](https://opensource.org/licenses/Apache-2.0)
-[![Framework](https://img.shields.io/badge/Built%20with-Candle-lightgrey.svg)](https://github.com/huggingface/candle)
 
 **AI-powered Coreutils for the modern terminal.**
 
-`qsh` is a high-performance, multimodal terminal assistant that brings the power of **Qwen 3.5-0.8B** directly to your command line. Built in Rust for speed and safety, it acts as a suite of "smart pipes" for your existing Unix workflows.
+`qsh` is a high-performance terminal assistant that brings the power of **Qwen 3.5-0.8B** directly to your command line. It uses a hybrid architecture: a lightning-fast **Rust CLI** wrapper around a high-performance **Python inference engine** (PyTorch/MPS), providing the best of both worlds: speed, safety, and cutting-edge multimodal capabilities.
 
 ---
 
 ## 🚀 Quick Install (macOS / Linux)
 
-Ensure you have [Rust](https://rustup.rs/) installed, then run:
+Ensure you have [Rust](https://rustup.rs/) and **Python 3.10+** installed, then run:
 
 ```bash
 curl -sSL https://raw.githubusercontent.com/woodRock/qsh/main/setup.sh | sh
@@ -26,8 +26,8 @@ curl -sSL https://raw.githubusercontent.com/woodRock/qsh/main/setup.sh | sh
 - **English to Bash:** Natural language command generation with instant execution and line-by-line explanation.
 - **Semantic Text Filter:** `grep` on steroids. Filter lines based on meaning rather than just regex patterns.
 - **Multimodal Vision Filter:** Use visual reasoning to filter files. Analyze a stream of image paths with natural language queries.
-- **Hardware Accelerated:** Optimized for **Metal** (macOS) and **CUDA** (Linux) via the Candle inference framework.
-- **Hybrid Architecture:** Custom implementation of **Gated DeltaNet** and **Gated Attention** for efficient local inference.
+- **Hardware Accelerated:** Automatically leverages **MPS** (Apple Silicon) or **CUDA** (NVIDIA) via PyTorch for ultra-fast inference.
+- **Hybrid Architecture:** Optimized Rust binary for the CLI interface and a dedicated Python virtual environment for heavy-lifting inference.
 
 ---
 
@@ -56,26 +56,26 @@ ls screenshots/*.png | qsh vision "is there code visible in this image?"
 
 ## 🏗️ Technical Implementation
 
-`qsh` implements the full **Qwen 3.5-0.8B** architecture from scratch in Rust:
-- **Unified Vision-Language Foundation:** Early-fusion multimodal processing.
-- **Mamba-2 / SSD Evolution:** Implementation of Gated DeltaNet recurrent layers.
-- **RoPE & QKNorm:** Accurate positional embeddings and head normalization for stable output.
-- **Greedy Decoding:** Optimized for reliability in small-parameter models.
+`qsh` utilizes a robust hybrid approach:
+- **Rust Frontend:** Handles the CLI arguments, pipes, interactive loops, and process management.
+- **Python Backend:** A dedicated `qenv` virtual environment running the **Qwen 3.5-0.8B** model.
+- **Efficient Bridge:** High-speed communication via JSON-RPC over local pipes.
+- **Multimodal Foundation:** Full support for Qwen 3.5's vision-language features, including interleaved text and image processing.
+- **Smart Resizing:** Automatically manages image dimensions to optimize memory usage on hardware accelerators like MPS.
 
 ## 📦 Setup from Source
 
-1. **Clone & Build:**
+1. **Clone the Repo:**
    ```bash
    git clone https://github.com/woodRock/qsh.git
-   cd qsh/qsh
-   cargo build --release
+   cd qsh
    ```
 
-2. **Initialize Weights:**
+2. **Run Setup Script:**
    ```bash
-   ./target/release/qsh setup
+   ./setup.sh
    ```
 
 ---
 
-Built with ❤️ and 🦀 by the community. Powered by [Qwen](https://github.com/QwenLM/Qwen).
+Built with ❤️ by the community. Powered by [Qwen](https://github.com/QwenLM/Qwen).
