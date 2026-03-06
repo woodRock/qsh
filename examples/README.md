@@ -7,7 +7,7 @@ Welcome to the `qsh` examples folder! These files are here to help you test the 
 First, ensure you have set up the model weights:
 
 ```bash
-cargo run --release -- setup
+qsh setup
 ```
 
 ---
@@ -18,10 +18,10 @@ Ask `qsh` to perform complex tasks using standard Unix tools.
 
 ```bash
 # Example: Find all files modified in the last 24 hours
-cargo run --release -- "find all files modified in the last 24 hours"
+qsh "find all files modified in the last 24 hours"
 
 # Example: Count total lines of all Rust files in this project
-cargo run --release -- "count the total lines in all .rs files in this folder recursively"
+qsh "count the total lines in all .rs files in this folder recursively"
 ```
 
 ---
@@ -32,7 +32,7 @@ Filter text based on meaning, not just exact keywords.
 
 ```bash
 # Filter notes that mention a specific time or deadline
-cat examples/notes.txt | cargo run --release -- filter "is this about a deadline or due date?"
+cat examples/notes.txt | qsh filter "is this about a deadline or due date?"
 ```
 
 ---
@@ -44,19 +44,19 @@ Process and filter images based on what's *inside* them.
 ### A. Sorting by Content
 ```bash
 # Find only the cat in the examples folder
-ls examples/*.jpg | cargo run --release -- vision "is there a cat in this photo?"
+ls examples/*.jpg | qsh vision "is there a cat in this photo?"
 ```
 
 ### B. Finding Code Screenshots
 ```bash
 # Identify if an image is a screenshot of software code
-ls examples/*.png | cargo run --release -- vision "is this a screenshot of code?"
+ls examples/*.png | qsh vision "is this a screenshot of code?"
 ```
 
 ### C. Filtering Blurry Photos
 ```bash
 # Find photos that are out of focus or blurry
-ls examples/*.jpg | cargo run --release -- vision "is this photo blurry or out of focus?"
+ls examples/*.jpg | qsh vision "is this photo blurry or out of focus?"
 ```
 
 ---
