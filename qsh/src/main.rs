@@ -13,6 +13,20 @@ struct Cli {
 
     /// The commander prompt (English to Bash)
     prompt: Option<String>,
+
+    /// The engine to use (python or rust)
+    #[arg(short, long, default_value = "python")]
+    engine: Engine,
+
+    /// The model ID to use from HuggingFace
+    #[arg(short, long)]
+    model: Option<String>,
+}
+
+#[derive(clap::ValueEnum, Clone, Debug, PartialEq)]
+enum Engine {
+    Python,
+    Rust,
 }
 
 #[derive(Subcommand)]
@@ -28,6 +42,8 @@ enum Commands {
         query: String,
     },
 }
+
+mod model;
 
 #[derive(Serialize)]
 struct InferenceRequest {
@@ -58,37 +74,38 @@ struct PythonBridge {
 }
 
 impl PythonBridge {
-    fn spawn() -> Result<Self> {
+    fn spawn(model_id: Option<&str>) -> Result<Self> {
         let exe_path = std::env::current_exe()?;
         let exe_dir = exe_path.parent().context("Failed to get exe directory")?;
         
-        // Try relative to exe first (for target/release development)
         let mut python_path = exe_dir.join("qenv/bin/python3");
         let mut inference_path = exe_dir.join("src/inference.py");
 
         if !python_path.exists() {
-            // Try one level up (if installed in bin/ and qenv is in prefix/)
             python_path = exe_dir.parent().context("Failed to get parent dir")?.join("qenv/bin/python3");
             inference_path = exe_dir.parent().context("Failed to get parent dir")?.join("src/inference.py");
         }
         
         if !python_path.exists() {
-            // Try current working directory (for development)
             python_path = std::path::PathBuf::from("qenv/bin/python3");
             inference_path = std::path::PathBuf::from("src/inference.py");
         }
         
         if !python_path.exists() {
-            // Fallback to absolute development path
             python_path = std::path::PathBuf::from("/Users/woodj/Desktop/qsh/qenv/bin/python3");
             inference_path = std::path::PathBuf::from("/Users/woodj/Desktop/qsh/qsh/src/inference.py");
         }
 
-        let mut child = Command::new(&python_path)
-            .arg(&inference_path)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
+        let mut cmd = Command::new(&python_path);
+        cmd.arg(&inference_path)
+           .stdin(Stdio::piped())
+           .stdout(Stdio::piped());
+        
+        if let Some(id) = model_id {
+            cmd.env("QSH_MODEL", id);
+        }
+
+        let mut child = cmd.spawn()
             .context(format!("Failed to start Python inference script at {:?}. Ensure transformers, torch, qwen-vl-utils are installed in qenv.", inference_path))?;
         
         let stdout = child.stdout.take().context("Failed to capture stdout")?;
@@ -163,19 +180,191 @@ impl PythonBridge {
                     continue;
                 }
                 if let Some(txt) = response.text {
-                    return Ok(txt);
+                    let mut text = txt.trim().to_string();
+                    if let Some(_start) = text.find("<think>") {
+                        if let Some(end) = text.find("</think>") {
+                            text = text[end + 8..].trim().to_string();
+                        }
+                    }
+                    return Ok(text);
                 }
             }
         }
     }
 }
 
+struct RustBridge {
+    model: model::ModelForCausalLM,
+    tokenizer: tokenizers::Tokenizer,
+    device: candle_core::Device,
+    _model_id: String,
+}
+
+impl RustBridge {
+    fn spawn(model_id: Option<&str>) -> Result<Self> {
+        use hf_hub::{api::sync::Api, Repo};
+        let device = if candle_core::utils::metal_is_available() {
+            candle_core::Device::new_metal(0)?
+        } else {
+            candle_core::Device::Cpu
+        };
+
+        let id = model_id.unwrap_or("Qwen/Qwen3.5-0.8B");
+        eprintln!("Loading Rust model ({}) onto {:?}...", id, device);
+        
+        let api = Api::new()?;
+        let repo = api.repo(Repo::model(id.to_string()));
+        
+        let tokenizer_filename = repo.get("tokenizer.json")?;
+        let tokenizer = tokenizers::Tokenizer::from_file(tokenizer_filename).map_err(anyhow::Error::msg)?;
+        
+        let config_filename = repo.get("config.json")?;
+        let config_str = std::fs::read_to_string(config_filename)?;
+        let config: model::Config = serde_json::from_str(&config_str)?;
+        
+        let mut weights_filenames = vec![];
+        if let Ok(index_file) = repo.get("model.safetensors.index.json") {
+            let index_str = std::fs::read_to_string(index_file)?;
+            let index: serde_json::Value = serde_json::from_str(&index_str)?;
+            if let Some(weight_map) = index.get("weight_map").and_then(|m| m.as_object()) {
+                let mut unique_files = std::collections::HashSet::new();
+                for file in weight_map.values() {
+                    if let Some(file_str) = file.as_str() {
+                        unique_files.insert(file_str.to_string());
+                    }
+                }
+                for file in unique_files {
+                    weights_filenames.push(repo.get(&file)?);
+                }
+            }
+        } else {
+            match repo.get("model.safetensors") {
+                Ok(f) => weights_filenames.push(f),
+                Err(_) => {
+                    weights_filenames.push(repo.get("model.safetensors-00001-of-00001.safetensors")?);
+                }
+            }
+        }
+        
+        let vb = unsafe {
+            candle_nn::VarBuilder::from_mmaped_safetensors(&weights_filenames, candle_core::DType::BF16, &device)?
+        };
+
+        let model = model::ModelForCausalLM::new(&config, vb)?;
+
+        Ok(Self { model, tokenizer, device, _model_id: id.to_string() })
+    }
+
+    fn generate(&mut self, prompt: &str, max_tokens: usize) -> Result<String> {
+        let mut tokens = self.tokenizer.encode(prompt, true).map_err(anyhow::Error::msg)?.get_ids().to_vec();
+        let mut generated_text = String::new();
+
+        for i in 0..max_tokens {
+            let input = candle_core::Tensor::new(tokens.as_slice(), &self.device)?.unsqueeze(0)?;
+            let logits = self.model.forward(&input, None, 0)?;
+            let logits = logits.squeeze(0)?;
+            
+            let next_token = logits.argmax(0)?.to_scalar::<u32>()?;
+            
+            if next_token == self.tokenizer.get_vocab(true).get("<|endoftext|>").copied().unwrap_or(0) ||
+               next_token == self.tokenizer.get_vocab(true).get("<|im_end|>").copied().unwrap_or(0) {
+                break;
+            }
+
+            tokens.push(next_token);
+            let decoded = self.tokenizer.decode(&[next_token], true).map_err(anyhow::Error::msg)?;
+            generated_text.push_str(&decoded);
+            
+            if i == 0 {
+                self.model.clear_kv_cache();
+            }
+        }
+        
+        self.model.clear_kv_cache();
+        
+        let mut text = generated_text.trim().to_string();
+        if let Some(_start) = text.find("<think>") {
+            if let Some(end) = text.find("</think>") {
+                text = text[end + 8..].trim().to_string();
+            }
+        }
+        
+        if text.starts_with('`') && text.ends_with('`') {
+            text = text[1..text.len()-1].trim().to_string();
+        }
+
+        Ok(text)
+    }
+
+    fn query_bool(&mut self, request: &InferenceRequest) -> Result<bool> {
+        let prompt = match request.mode.as_str() {
+            "filter" => format!(
+                "<|im_start|>system\nYou are a text filter. Answer YES or NO.<|im_end|>\n<|im_start|>user\nIs the following line related to '{}'?\nLine: {}\nAnswer:<|im_end|>\n<|im_start|>assistant\n",
+                request.query.as_ref().unwrap(),
+                request.text.as_ref().unwrap()
+            ),
+            "vision" => {
+                format!(
+                    "<|im_start|>system\nYou are a vision assistant. Answer YES or NO.<|im_end|>\n<|im_start|>user\nAnalyze the image at path '{}'. Question: {} Answer YES or NO.<|im_end|>\n<|im_start|>assistant\n",
+                    request.path.as_ref().unwrap(),
+                    request.query.as_ref().unwrap()
+                )
+            }
+            _ => anyhow::bail!("Unsupported bool mode"),
+        };
+
+        let response = self.generate(&prompt, 5)?;
+        Ok(response.to_uppercase().contains("YES"))
+    }
+
+    fn query_text(&mut self, request: &InferenceRequest) -> Result<String> {
+        let (prompt, max_tokens) = match request.mode.as_str() {
+            "bash" => (
+                format!(
+                    "<|im_start|>system\nYou are a Unix shell expert. Provide the valid Bash command for the user's request. Output ONLY the command, no reasoning, no explanation.<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
+                    request.prompt.as_ref().unwrap()
+                ),
+                128
+            ),
+            "explain" => (
+                format!(
+                    "<|im_start|>system\nYou are a Unix shell expert.<|im_end|>\n<|im_start|>user\nExplain this Bash command briefly: {}<|im_end|>\n<|im_start|>assistant\n",
+                    request.command.as_ref().unwrap()
+                ),
+                200
+            ),
+            _ => anyhow::bail!("Unsupported text mode"),
+        };
+
+        self.generate(&prompt, max_tokens)
+    }
+}
+
+trait Bridge {
+    fn query_bool(&mut self, request: &InferenceRequest) -> Result<bool>;
+    fn query_text(&mut self, request: &InferenceRequest) -> Result<String>;
+}
+
+impl Bridge for PythonBridge {
+    fn query_bool(&mut self, request: &InferenceRequest) -> Result<bool> { self.query_bool(request) }
+    fn query_text(&mut self, request: &InferenceRequest) -> Result<String> { self.query_text(request) }
+}
+
+impl Bridge for RustBridge {
+    fn query_bool(&mut self, request: &InferenceRequest) -> Result<bool> { self.query_bool(request) }
+    fn query_text(&mut self, request: &InferenceRequest) -> Result<String> { self.query_text(request) }
+}
+
 fn main() -> Result<()> {
     let cli = Cli::parse();
 
+    let mut bridge: Box<dyn Bridge> = match cli.engine {
+        Engine::Python => Box::new(PythonBridge::spawn(cli.model.as_deref())?),
+        Engine::Rust => Box::new(RustBridge::spawn(cli.model.as_deref())?),
+    };
+
     match cli.command {
         Some(Commands::Filter { query }) => {
-            let mut bridge = PythonBridge::spawn()?;
             let stdin = io::stdin();
             for line in stdin.lock().lines() {
                 let line = line?;
@@ -194,7 +383,6 @@ fn main() -> Result<()> {
             }
         }
         Some(Commands::Vision { query }) => {
-            let mut bridge = PythonBridge::spawn()?;
             let stdin = io::stdin();
             for path in stdin.lock().lines() {
                 let path = path?;
@@ -214,7 +402,6 @@ fn main() -> Result<()> {
         }
         None => {
             if let Some(prompt) = cli.prompt {
-                let mut bridge = PythonBridge::spawn()?;
                 let request = InferenceRequest {
                     mode: "bash".to_string(),
                     query: None,
