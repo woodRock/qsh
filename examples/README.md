@@ -65,7 +65,8 @@ ls examples/*.jpg | cargo run --release -- vision "is this photo blurry or out o
 
 In the future, you will be able to chain these seamlessly:
 
-```bash
-# Clean up your downloads folder based on AI vision
-qsh "Find all blurry photos in examples/ and move them to a 'trash' folder"
-```
+---
+
+## License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
