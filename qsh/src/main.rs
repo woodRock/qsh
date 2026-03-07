@@ -15,12 +15,16 @@ struct Cli {
     prompt: Option<String>,
 
     /// The engine to use (python or rust)
-    #[arg(short, long, default_value = "python")]
-    engine: Engine,
+    #[arg(short, long)]
+    engine: Option<Engine>,
 
     /// The model ID to use from HuggingFace
     #[arg(short, long)]
     model: Option<String>,
+
+    /// Clear the chat history
+    #[arg(long)]
+    clear_history: bool,
 }
 
 #[derive(clap::ValueEnum, Clone, Debug, PartialEq)]
@@ -44,6 +48,13 @@ enum Commands {
 }
 
 mod model;
+mod config;
+mod history;
+mod safety;
+
+use config::Config;
+use history::History;
+use colored::*;
 
 #[derive(Serialize)]
 struct InferenceRequest {
@@ -58,6 +69,8 @@ struct InferenceRequest {
     prompt: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     command: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    history: Option<Vec<(String, String)>>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -66,6 +79,7 @@ struct InferenceResponse {
     text: Option<String>,
     error: Option<String>,
     info: Option<String>,
+    chunk: Option<String>,
 }
 
 struct PythonBridge {
@@ -159,12 +173,13 @@ impl PythonBridge {
         }
     }
 
-    fn query_text(&mut self, request: &InferenceRequest) -> Result<String> {
+    fn query_text(&mut self, request: &InferenceRequest, stream: bool) -> Result<String> {
         let stdin = self.child.stdin.as_mut().context("Failed to open stdin")?;
         let json = serde_json::to_string(request)?;
         writeln!(stdin, "{}", json)?;
         stdin.flush()?;
 
+        let mut full_text = String::new();
         loop {
             let mut line = String::new();
             if self.reader.read_line(&mut line)? == 0 {
@@ -177,6 +192,14 @@ impl PythonBridge {
                 }
                 if let Some(info) = response.info {
                     eprintln!("Info: {}", info);
+                    continue;
+                }
+                if let Some(chunk) = response.chunk {
+                    if stream {
+                        print!("{}", chunk);
+                        io::stdout().flush()?;
+                    }
+                    full_text.push_str(&chunk);
                     continue;
                 }
                 if let Some(txt) = response.text {
@@ -255,7 +278,7 @@ impl RustBridge {
         Ok(Self { model, tokenizer, device, _model_id: id.to_string() })
     }
 
-    fn generate(&mut self, prompt: &str, max_tokens: usize) -> Result<String> {
+    fn generate(&mut self, prompt: &str, max_tokens: usize, stream: bool) -> Result<String> {
         let mut tokens = self.tokenizer.encode(prompt, true).map_err(anyhow::Error::msg)?.get_ids().to_vec();
         let mut generated_text = String::new();
 
@@ -273,6 +296,12 @@ impl RustBridge {
 
             tokens.push(next_token);
             let decoded = self.tokenizer.decode(&[next_token], true).map_err(anyhow::Error::msg)?;
+            
+            if stream {
+                print!("{}", decoded);
+                io::stdout().flush()?;
+            }
+            
             generated_text.push_str(&decoded);
             
             if i == 0 {
@@ -295,14 +324,101 @@ impl RustBridge {
 
         Ok(text)
     }
+}
 
+trait Bridge {
+    fn query_bool(&mut self, request: &InferenceRequest) -> Result<bool>;
+    fn query_text(&mut self, request: &InferenceRequest, stream: bool) -> Result<String>;
+}
+
+impl Bridge for PythonBridge {
+    fn query_bool(&mut self, request: &InferenceRequest) -> Result<bool> {
+        let stdin = self.child.stdin.as_mut().context("Failed to open stdin")?;
+        let json = serde_json::to_string(request)?;
+        writeln!(stdin, "{}", json)?;
+        stdin.flush()?;
+
+        loop {
+            let mut line = String::new();
+            if self.reader.read_line(&mut line)? == 0 {
+                anyhow::bail!("Python process exited unexpectedly");
+            }
+            
+            if let Ok(response) = serde_json::from_str::<InferenceResponse>(&line) {
+                if let Some(err) = response.error {
+                    anyhow::bail!("Python Error: {}", err);
+                }
+                if let Some(info) = response.info {
+                    eprintln!("Info: {}", info);
+                    continue;
+                }
+                if let Some(res) = response.result {
+                    return Ok(res);
+                }
+            }
+        }
+    }
+
+    fn query_text(&mut self, request: &InferenceRequest, stream: bool) -> Result<String> {
+        let stdin = self.child.stdin.as_mut().context("Failed to open stdin")?;
+        let json = serde_json::to_string(request)?;
+        writeln!(stdin, "{}", json)?;
+        stdin.flush()?;
+
+        let mut full_text = String::new();
+        loop {
+            let mut line = String::new();
+            if self.reader.read_line(&mut line)? == 0 {
+                anyhow::bail!("Python process exited unexpectedly");
+            }
+            
+            if let Ok(response) = serde_json::from_str::<InferenceResponse>(&line) {
+                if let Some(err) = response.error {
+                    anyhow::bail!("Python Error: {}", err);
+                }
+                if let Some(info) = response.info {
+                    eprintln!("Info: {}", info);
+                    continue;
+                }
+                if let Some(chunk) = response.chunk {
+                    if stream {
+                        print!("{}", chunk);
+                        io::stdout().flush()?;
+                    }
+                    full_text.push_str(&chunk);
+                    continue;
+                }
+                if let Some(txt) = response.text {
+                    let mut text = txt.trim().to_string();
+                    if let Some(_start) = text.find("<think>") {
+                        if let Some(end) = text.find("</think>") {
+                            text = text[end + 8..].trim().to_string();
+                        }
+                    }
+                    return Ok(text);
+                }
+            }
+        }
+    }
+}
+
+impl Bridge for RustBridge {
     fn query_bool(&mut self, request: &InferenceRequest) -> Result<bool> {
         let prompt = match request.mode.as_str() {
-            "filter" => format!(
-                "<|im_start|>system\nYou are a text filter. Answer YES or NO.<|im_end|>\n<|im_start|>user\nIs the following line related to '{}'?\nLine: {}\nAnswer:<|im_end|>\n<|im_start|>assistant\n",
-                request.query.as_ref().unwrap(),
-                request.text.as_ref().unwrap()
-            ),
+            "filter" => {
+                let mut p = String::from("<|im_start|>system\nYou are a text filter. Answer YES or NO.<|im_end|>\n");
+                if let Some(hist) = &request.history {
+                    for (role, content) in hist {
+                        p.push_str(&format!("<|im_start|>{}\n{}<|im_end|>\n", role, content));
+                    }
+                }
+                p.push_str(&format!(
+                    "<|im_start|>user\nIs the following line related to '{}'?\nLine: {}\nAnswer:<|im_end|>\n<|im_start|>assistant\n",
+                    request.query.as_ref().unwrap(),
+                    request.text.as_ref().unwrap()
+                ));
+                p
+            },
             "vision" => {
                 format!(
                     "<|im_start|>system\nYou are a vision assistant. Answer YES or NO.<|im_end|>\n<|im_start|>user\nAnalyze the image at path '{}'. Question: {} Answer YES or NO.<|im_end|>\n<|im_start|>assistant\n",
@@ -313,54 +429,61 @@ impl RustBridge {
             _ => anyhow::bail!("Unsupported bool mode"),
         };
 
-        let response = self.generate(&prompt, 5)?;
+        let response = self.generate(&prompt, 5, false)?;
         Ok(response.to_uppercase().contains("YES"))
     }
 
-    fn query_text(&mut self, request: &InferenceRequest) -> Result<String> {
+    fn query_text(&mut self, request: &InferenceRequest, stream: bool) -> Result<String> {
         let (prompt, max_tokens) = match request.mode.as_str() {
-            "bash" => (
-                format!(
-                    "<|im_start|>system\nYou are a Unix shell expert. Provide the valid Bash command for the user's request. Output ONLY the command, no reasoning, no explanation.<|im_end|>\n<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
+            "bash" => {
+                let mut p = String::from("<|im_start|>system\nYou are a Unix shell expert. Provide the valid Bash command for the user's request. Output ONLY the command, no reasoning, no explanation.<|im_end|>\n");
+                if let Some(hist) = &request.history {
+                    for (role, content) in hist {
+                        p.push_str(&format!("<|im_start|>{}\n{}<|im_end|>\n", role, content));
+                    }
+                }
+                p.push_str(&format!(
+                    "<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
                     request.prompt.as_ref().unwrap()
-                ),
-                128
-            ),
-            "explain" => (
-                format!(
+                ));
+                (p, 128)
+            },
+            "explain" => {
+                (format!(
                     "<|im_start|>system\nYou are a Unix shell expert.<|im_end|>\n<|im_start|>user\nExplain this Bash command briefly: {}<|im_end|>\n<|im_start|>assistant\n",
                     request.command.as_ref().unwrap()
-                ),
-                200
-            ),
+                ), 200)
+            },
             _ => anyhow::bail!("Unsupported text mode"),
         };
 
-        self.generate(&prompt, max_tokens)
+        self.generate(&prompt, max_tokens, stream)
     }
-}
-
-trait Bridge {
-    fn query_bool(&mut self, request: &InferenceRequest) -> Result<bool>;
-    fn query_text(&mut self, request: &InferenceRequest) -> Result<String>;
-}
-
-impl Bridge for PythonBridge {
-    fn query_bool(&mut self, request: &InferenceRequest) -> Result<bool> { self.query_bool(request) }
-    fn query_text(&mut self, request: &InferenceRequest) -> Result<String> { self.query_text(request) }
-}
-
-impl Bridge for RustBridge {
-    fn query_bool(&mut self, request: &InferenceRequest) -> Result<bool> { self.query_bool(request) }
-    fn query_text(&mut self, request: &InferenceRequest) -> Result<String> { self.query_text(request) }
 }
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let config = Config::load();
+    let history = History::open()?;
 
-    let mut bridge: Box<dyn Bridge> = match cli.engine {
-        Engine::Python => Box::new(PythonBridge::spawn(cli.model.as_deref())?),
-        Engine::Rust => Box::new(RustBridge::spawn(cli.model.as_deref())?),
+    if cli.clear_history {
+        history.clear()?;
+        println!("History cleared.");
+        return Ok(());
+    }
+
+    let engine = cli.engine.unwrap_or_else(|| {
+        match config.default_engine.as_str() {
+            "rust" => Engine::Rust,
+            _ => Engine::Python,
+        }
+    });
+
+    let model_id = cli.model.as_deref().or(Some(&config.default_model));
+
+    let mut bridge: Box<dyn Bridge> = match engine {
+        Engine::Python => Box::new(PythonBridge::spawn(model_id)?),
+        Engine::Rust => Box::new(RustBridge::spawn(model_id)?),
     };
 
     match cli.command {
@@ -376,6 +499,7 @@ fn main() -> Result<()> {
                     text: Some(line.clone()),
                     prompt: None,
                     command: None,
+                    history: None, // Filter doesn't use history for performance
                 };
                 if bridge.query_bool(&request)? {
                     println!("{}", line);
@@ -386,14 +510,22 @@ fn main() -> Result<()> {
             let stdin = io::stdin();
             for path in stdin.lock().lines() {
                 let path = path?;
-                if path.trim().is_empty() { continue; }
+                let path = path.trim();
+                if path.is_empty() { continue; }
+                
+                // Check if file exists to avoid crashes
+                if !std::path::Path::new(path).exists() {
+                    continue;
+                }
+
                 let request = InferenceRequest {
                     mode: "vision".to_string(),
                     query: Some(query.clone()),
-                    path: Some(path.clone()),
+                    path: Some(path.to_string()),
                     text: None,
                     prompt: None,
                     command: None,
+                    history: None,
                 };
                 if bridge.query_bool(&request)? {
                     println!("{}", path);
@@ -402,22 +534,33 @@ fn main() -> Result<()> {
         }
         None => {
             if let Some(prompt) = cli.prompt {
+                let recent = history.get_recent_messages(10)?;
                 let request = InferenceRequest {
                     mode: "bash".to_string(),
                     query: None,
                     path: None,
                     text: None,
-                    prompt: Some(prompt),
+                    prompt: Some(prompt.clone()),
                     command: None,
+                    history: Some(recent),
                 };
-                let command = bridge.query_text(&request)?;
+                
+                print!("\nSuggested Command: ");
+                io::stdout().flush()?;
+                let command = bridge.query_text(&request, true)?;
+                println!();
                 
                 if command.is_empty() {
                     println!("Error: Model failed to generate a command.");
                     return Ok(());
                 }
-                
-                println!("\nSuggested Command: {}", command);
+
+                history.add_message("user", &prompt)?;
+                history.add_message("assistant", &command)?;
+
+                if config.safety_check && !safety::check_safety(&command) {
+                    safety::print_warning(&command);
+                }
                 
                 loop {
                     print!("[E]xecute, [e]xplain, [a]bort? ");
@@ -434,11 +577,11 @@ fn main() -> Result<()> {
                             text: None,
                             prompt: None,
                             command: Some(command.clone()),
+                            history: None,
                         };
                         println!("\n> Explanation:");
-                        let explanation = bridge.query_text(&req)?;
-                        println!("{}", explanation);
-                        println!();
+                        bridge.query_text(&req, true)?;
+                        println!("\n");
                         continue;
                     } else if choice == "E" || choice.is_empty() {
                         println!("Executing: {}", command);

@@ -112,32 +112,45 @@ def run_filter(line, query):
     
     return "YES" in output_text.upper()
 
-def run_bash(prompt):
+from transformers import TextIteratorStreamer
+from threading import Thread
+
+def run_bash(prompt, history=None):
     messages = [
-        {"role": "system", "content": "You are a Unix shell expert. Provide the valid Bash command for the user's request. Output ONLY the command, no reasoning, no explanation."},
-        {"role": "user", "content": prompt}
+        {"role": "system", "content": "You are a Unix shell expert. Provide the valid Bash command for the user's request. Output ONLY the command, no reasoning, no explanation."}
     ]
+    if history:
+        for role, content in history:
+            messages.append({"role": role, "content": content})
+    
+    messages.append({"role": "user", "content": prompt})
     
     text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     inputs = processor(text=[text], padding=True, return_tensors="pt").to(device)
 
-    generated_ids = model.generate(
-        **inputs, 
+    streamer = TextIteratorStreamer(processor.tokenizer, skip_prompt=True, skip_special_tokens=True)
+    generation_kwargs = dict(
+        **inputs,
+        streamer=streamer,
         max_new_tokens=128,
         pad_token_id=processor.tokenizer.eos_token_id,
         do_sample=False
     )
-    generated_ids_trimmed = [
-        out_ids[len(in_ids) :] for in_ids, out_ids in zip(inputs.input_ids, generated_ids)
-    ]
-    output_text = processor.batch_decode(
-        generated_ids_trimmed, skip_special_tokens=True, clean_up_tokenization_spaces=False
-    )[0]
+
+    thread = Thread(target=model.generate, kwargs=generation_kwargs)
+    thread.start()
+
+    full_response = ""
+    for new_text in streamer:
+        full_response += new_text
+        print(json.dumps({"chunk": new_text}))
+        sys.stdout.flush()
     
-    if "<think>" in output_text:
-        output_text = output_text.split("</think>")[-1]
+    # Final cleanup after streaming
+    if "<think>" in full_response:
+        full_response = full_response.split("</think>")[-1]
         
-    output_text = output_text.strip()
+    output_text = full_response.strip()
     if "```" in output_text:
         import re
         match = re.search(r"```(?:bash)?\n?(.*?)\n?```", output_text, re.DOTALL)
@@ -192,7 +205,8 @@ if __name__ == "__main__":
                 print(json.dumps({"result": result}))
             elif mode == "bash":
                 prompt = data.get("prompt")
-                result_text = run_bash(prompt)
+                history = data.get("history")
+                result_text = run_bash(prompt, history)
                 print(json.dumps({"text": result_text}))
             elif mode == "explain":
                 cmd = data.get("command")
