@@ -28,7 +28,12 @@ pub fn check_safety(command: &str) -> bool {
 }
 
 pub fn print_warning(command: &str) {
-    println!("\n{}", "⚠️  WARNING: This command looks potentially destructive!".bold().yellow());
+    println!(
+        "\n{}",
+        "⚠️  WARNING: This command looks potentially destructive!"
+            .bold()
+            .yellow()
+    );
     println!("Suggested Command: {}", command.bold().red());
 }
 

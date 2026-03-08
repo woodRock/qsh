@@ -1,8 +1,8 @@
+use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use anyhow::{Result, Context};
+use serde::{Deserialize, Serialize};
 use std::io::{self, BufRead, Write};
-use std::process::{Command, Stdio, Child};
-use serde::{Serialize, Deserialize};
+use std::process::{Child, Command, Stdio};
 
 #[derive(Parser)]
 #[command(name = "qsh")]
@@ -47,14 +47,11 @@ enum Commands {
     },
 }
 
-mod model;
-mod config;
-mod history;
-mod safety;
-
-use config::Config;
-use history::History;
 use colored::Colorize;
+use qsh::config::Config;
+use qsh::history::History;
+use qsh::model;
+use qsh::safety;
 
 #[derive(Serialize)]
 struct InferenceRequest {
@@ -91,43 +88,52 @@ impl PythonBridge {
     fn spawn(model_id: Option<&str>) -> Result<Self> {
         let exe_path = std::env::current_exe()?;
         let exe_dir = exe_path.parent().context("Failed to get exe directory")?;
-        
+
         let mut python_path = exe_dir.join("qenv/bin/python3");
         let mut inference_path = exe_dir.join("src/inference.py");
 
         if !python_path.exists() {
-            python_path = exe_dir.parent().context("Failed to get parent dir")?.join("qenv/bin/python3");
-            inference_path = exe_dir.parent().context("Failed to get parent dir")?.join("src/inference.py");
+            python_path = exe_dir
+                .parent()
+                .context("Failed to get parent dir")?
+                .join("qenv/bin/python3");
+            inference_path = exe_dir
+                .parent()
+                .context("Failed to get parent dir")?
+                .join("src/inference.py");
         }
-        
+
         if !python_path.exists() {
             python_path = std::path::PathBuf::from("qenv/bin/python3");
             inference_path = std::path::PathBuf::from("src/inference.py");
         }
-        
+
         if !python_path.exists() {
             python_path = std::path::PathBuf::from("/Users/woodj/Desktop/qsh/qenv/bin/python3");
-            inference_path = std::path::PathBuf::from("/Users/woodj/Desktop/qsh/qsh/src/inference.py");
+            inference_path =
+                std::path::PathBuf::from("/Users/woodj/Desktop/qsh/qsh/src/inference.py");
         }
 
         let mut cmd = Command::new(&python_path);
         cmd.arg(&inference_path)
-           .stdin(Stdio::piped())
-           .stdout(Stdio::piped());
-        
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped());
+
         if let Some(id) = model_id {
             cmd.env("QSH_MODEL", id);
         }
 
         let mut child = cmd.spawn()
             .context(format!("Failed to start Python inference script at {:?}. Ensure transformers, torch, qwen-vl-utils are installed in qenv.", inference_path))?;
-        
+
         let stdout = child.stdout.take().context("Failed to capture stdout")?;
         let mut reader = io::BufReader::new(stdout);
-        
+
         loop {
             let mut line = String::new();
-            if reader.read_line(&mut line)? == 0 { break; }
+            if reader.read_line(&mut line)? == 0 {
+                break;
+            }
             if let Ok(resp) = serde_json::from_str::<InferenceResponse>(&line) {
                 if let Some(info) = resp.info {
                     eprintln!("Info: {}", info);
@@ -156,7 +162,7 @@ struct RustBridge {
 
 impl RustBridge {
     fn spawn(model_id: Option<&str>) -> Result<Self> {
-        use hf_hub::{api::sync::Api, Repo};
+        use hf_hub::{Repo, api::sync::Api};
         let device = if candle_core::utils::metal_is_available() {
             candle_core::Device::new_metal(0)?
         } else {
@@ -165,17 +171,18 @@ impl RustBridge {
 
         let id = model_id.unwrap_or("Qwen/Qwen3.5-0.8B");
         eprintln!("Loading Rust model ({}) onto {:?}...", id, device);
-        
+
         let api = Api::new()?;
         let repo = api.repo(Repo::model(id.to_string()));
-        
+
         let tokenizer_filename = repo.get("tokenizer.json")?;
-        let tokenizer = tokenizers::Tokenizer::from_file(tokenizer_filename).map_err(anyhow::Error::msg)?;
-        
+        let tokenizer =
+            tokenizers::Tokenizer::from_file(tokenizer_filename).map_err(anyhow::Error::msg)?;
+
         let config_filename = repo.get("config.json")?;
         let config_str = std::fs::read_to_string(config_filename)?;
         let config: model::Config = serde_json::from_str(&config_str)?;
-        
+
         let mut weights_filenames = vec![];
         if let Ok(index_file) = repo.get("model.safetensors.index.json") {
             let index_str = std::fs::read_to_string(index_file)?;
@@ -195,62 +202,93 @@ impl RustBridge {
             match repo.get("model.safetensors") {
                 Ok(f) => weights_filenames.push(f),
                 Err(_) => {
-                    weights_filenames.push(repo.get("model.safetensors-00001-of-00001.safetensors")?);
+                    weights_filenames
+                        .push(repo.get("model.safetensors-00001-of-00001.safetensors")?);
                 }
             }
         }
-        
+
         let vb = unsafe {
-            candle_nn::VarBuilder::from_mmaped_safetensors(&weights_filenames, candle_core::DType::BF16, &device)?
+            candle_nn::VarBuilder::from_mmaped_safetensors(
+                &weights_filenames,
+                candle_core::DType::BF16,
+                &device,
+            )?
         };
 
         let model = model::ModelForCausalLM::new(&config, vb)?;
 
-        Ok(Self { model, tokenizer, device, _model_id: id.to_string() })
+        Ok(Self {
+            model,
+            tokenizer,
+            device,
+            _model_id: id.to_string(),
+        })
     }
 
     fn generate(&mut self, prompt: &str, max_tokens: usize, stream: bool) -> Result<String> {
-        let mut tokens = self.tokenizer.encode(prompt, true).map_err(anyhow::Error::msg)?.get_ids().to_vec();
+        let mut tokens = self
+            .tokenizer
+            .encode(prompt, true)
+            .map_err(anyhow::Error::msg)?
+            .get_ids()
+            .to_vec();
         let mut generated_text = String::new();
 
         for i in 0..max_tokens {
             let input = candle_core::Tensor::new(tokens.as_slice(), &self.device)?.unsqueeze(0)?;
             let logits = self.model.forward(&input, None, 0)?;
             let logits = logits.squeeze(0)?;
-            
+
             let next_token = logits.argmax(0)?.to_scalar::<u32>()?;
-            
-            if next_token == self.tokenizer.get_vocab(true).get("<|endoftext|>").copied().unwrap_or(0) ||
-               next_token == self.tokenizer.get_vocab(true).get("<|im_end|>").copied().unwrap_or(0) {
+
+            if next_token
+                == self
+                    .tokenizer
+                    .get_vocab(true)
+                    .get("<|endoftext|>")
+                    .copied()
+                    .unwrap_or(0)
+                || next_token
+                    == self
+                        .tokenizer
+                        .get_vocab(true)
+                        .get("<|im_end|>")
+                        .copied()
+                        .unwrap_or(0)
+            {
                 break;
             }
 
             tokens.push(next_token);
-            let decoded = self.tokenizer.decode(&[next_token], true).map_err(anyhow::Error::msg)?;
-            
+            let decoded = self
+                .tokenizer
+                .decode(&[next_token], true)
+                .map_err(anyhow::Error::msg)?;
+
             if stream {
                 print!("{}", decoded);
                 io::stdout().flush()?;
             }
-            
+
             generated_text.push_str(&decoded);
-            
+
             if i == 0 {
                 self.model.clear_kv_cache();
             }
         }
-        
+
         self.model.clear_kv_cache();
-        
+
         let mut text = generated_text.trim().to_string();
         if let Some(_start) = text.find("<think>") {
             if let Some(end) = text.find("</think>") {
                 text = text[end + 8..].trim().to_string();
             }
         }
-        
+
         if text.starts_with('`') && text.ends_with('`') {
-            text = text[1..text.len()-1].trim().to_string();
+            text = text[1..text.len() - 1].trim().to_string();
         }
 
         Ok(text)
@@ -274,7 +312,7 @@ impl Bridge for PythonBridge {
             if self.reader.read_line(&mut line)? == 0 {
                 anyhow::bail!("Python process exited unexpectedly");
             }
-            
+
             if let Ok(response) = serde_json::from_str::<InferenceResponse>(&line) {
                 if let Some(err) = response.error {
                     anyhow::bail!("Python Error: {}", err);
@@ -302,7 +340,7 @@ impl Bridge for PythonBridge {
             if self.reader.read_line(&mut line)? == 0 {
                 anyhow::bail!("Python process exited unexpectedly");
             }
-            
+
             if let Ok(response) = serde_json::from_str::<InferenceResponse>(&line) {
                 if let Some(err) = response.error {
                     anyhow::bail!("Python Error: {}", err);
@@ -337,7 +375,9 @@ impl Bridge for RustBridge {
     fn query_bool(&mut self, request: &InferenceRequest) -> Result<bool> {
         let prompt = match request.mode.as_str() {
             "filter" => {
-                let mut p = String::from("<|im_start|>system\nYou are a text filter. Answer YES or NO.<|im_end|>\n");
+                let mut p = String::from(
+                    "<|im_start|>system\nYou are a text filter. Answer YES or NO.<|im_end|>\n",
+                );
                 if let Some(hist) = &request.history {
                     for (role, content) in hist {
                         p.push_str(&format!("<|im_start|>{}\n{}<|im_end|>\n", role, content));
@@ -349,7 +389,7 @@ impl Bridge for RustBridge {
                     request.text.as_ref().unwrap()
                 ));
                 p
-            },
+            }
             "vision" => {
                 format!(
                     "<|im_start|>system\nYou are a vision assistant. Answer YES or NO.<|im_end|>\n<|im_start|>user\nAnalyze the image at path '{}'. Question: {} Answer YES or NO.<|im_end|>\n<|im_start|>assistant\n",
@@ -367,7 +407,9 @@ impl Bridge for RustBridge {
     fn query_text(&mut self, request: &InferenceRequest, stream: bool) -> Result<String> {
         let (prompt, max_tokens) = match request.mode.as_str() {
             "bash" => {
-                let mut p = String::from("<|im_start|>system\nYou are a Unix shell expert. Provide the valid Bash command for the user's request. Output ONLY the command, no reasoning, no explanation.<|im_end|>\n");
+                let mut p = String::from(
+                    "<|im_start|>system\nYou are a Unix shell expert. Provide the valid Bash command for the user's request. Output ONLY the command, no reasoning, no explanation.<|im_end|>\n",
+                );
                 if let Some(hist) = &request.history {
                     for (role, content) in hist {
                         p.push_str(&format!("<|im_start|>{}\n{}<|im_end|>\n", role, content));
@@ -378,13 +420,14 @@ impl Bridge for RustBridge {
                     request.prompt.as_ref().unwrap()
                 ));
                 (p, 128)
-            },
-            "explain" => {
-                (format!(
+            }
+            "explain" => (
+                format!(
                     "<|im_start|>system\nYou are a Unix shell expert.<|im_end|>\n<|im_start|>user\nExplain this Bash command briefly: {}<|im_end|>\n<|im_start|>assistant\n",
                     request.command.as_ref().unwrap()
-                ), 200)
-            },
+                ),
+                200,
+            ),
             _ => anyhow::bail!("Unsupported text mode"),
         };
 
@@ -404,12 +447,12 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let engine = cli.engine.unwrap_or_else(|| {
-        match config.default_engine.as_str() {
+    let engine = cli
+        .engine
+        .unwrap_or_else(|| match config.default_engine.as_str() {
             "rust" => Engine::Rust,
             _ => Engine::Python,
-        }
-    });
+        });
 
     let model_id = cli.model.as_deref().or(Some(&config.default_model));
 
@@ -423,7 +466,9 @@ fn main() -> Result<()> {
             let stdin = io::stdin();
             for line in stdin.lock().lines() {
                 let line = line?;
-                if line.trim().is_empty() { continue; }
+                if line.trim().is_empty() {
+                    continue;
+                }
                 let request = InferenceRequest {
                     mode: "filter".to_string(),
                     query: Some(query.clone()),
@@ -443,8 +488,10 @@ fn main() -> Result<()> {
             for path in stdin.lock().lines() {
                 let path = path?;
                 let path = path.trim();
-                if path.is_empty() { continue; }
-                
+                if path.is_empty() {
+                    continue;
+                }
+
                 // Check if file exists to avoid crashes
                 if !std::path::Path::new(path).exists() {
                     continue;
@@ -476,12 +523,12 @@ fn main() -> Result<()> {
                     command: None,
                     history: Some(recent),
                 };
-                
+
                 print!("\nSuggested Command: ");
                 io::stdout().flush()?;
                 let command = bridge.query_text(&request, true)?;
                 println!();
-                
+
                 if command.is_empty() {
                     println!("Error: Model failed to generate a command.");
                     return Ok(());
@@ -492,7 +539,12 @@ fn main() -> Result<()> {
 
                 if config.safety_check && !safety::check_safety(&command) {
                     safety::print_warning(&command);
-                    print!("{}", "Are you absolutely sure you want to proceed? [y/N] ".bold().red());
+                    print!(
+                        "{}",
+                        "Are you absolutely sure you want to proceed? [y/N] "
+                            .bold()
+                            .red()
+                    );
                     io::stdout().flush()?;
                     let mut confirm = String::new();
                     io::stdin().read_line(&mut confirm)?;
@@ -501,14 +553,14 @@ fn main() -> Result<()> {
                         return Ok(());
                     }
                 }
-                
+
                 loop {
                     print!("[E]xecute, [e]xplain, [a]bort? ");
                     io::stdout().flush()?;
                     let mut input = String::new();
                     io::stdin().read_line(&mut input)?;
                     let choice = input.trim();
-                    
+
                     if choice == "e" {
                         let req = InferenceRequest {
                             mode: "explain".to_string(),
@@ -525,7 +577,11 @@ fn main() -> Result<()> {
                         continue;
                     } else if choice == "E" || choice.is_empty() {
                         println!("Executing: {}", command);
-                        Command::new("bash").arg("-c").arg(&command).spawn()?.wait()?;
+                        Command::new("bash")
+                            .arg("-c")
+                            .arg(&command)
+                            .spawn()?
+                            .wait()?;
                         break;
                     } else if choice.to_lowercase() == "a" {
                         println!("Aborted.");

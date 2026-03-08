@@ -1,7 +1,7 @@
-use serde::{Serialize, Deserialize};
-use std::path::PathBuf;
-use directories::ProjectDirs;
 use anyhow::Result;
+use directories::ProjectDirs;
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Config {
@@ -22,8 +22,11 @@ impl Default for Config {
 
 impl Config {
     pub fn load() -> Self {
-        let config_path = Self::get_path();
-        if let Ok(content) = std::fs::read_to_string(&config_path) {
+        Self::load_from(Self::get_path())
+    }
+
+    pub fn load_from(path: PathBuf) -> Self {
+        if let Ok(content) = std::fs::read_to_string(&path) {
             if let Ok(config) = toml::from_str(&content) {
                 return config;
             }
@@ -34,12 +37,15 @@ impl Config {
 
     #[allow(dead_code)]
     pub fn save(&self) -> Result<()> {
-        let config_path = Self::get_path();
-        if let Some(parent) = config_path.parent() {
+        self.save_to(Self::get_path())
+    }
+
+    pub fn save_to(&self, path: PathBuf) -> Result<()> {
+        if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)?;
         }
         let content = toml::to_string_pretty(self)?;
-        std::fs::write(config_path, content)?;
+        std::fs::write(path, content)?;
         Ok(())
     }
 
