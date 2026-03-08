@@ -1,5 +1,6 @@
 # 🐚 qsh: Qwen Shell
 
+[![Rust CI](https://github.com/woodRock/qsh/actions/workflows/rust.yml/badge.svg)](https://github.com/woodRock/qsh/actions/workflows/rust.yml)
 [![Rust](https://img.shields.io/badge/language-Rust-orange.svg)](https://www.rust-lang.org/)
 [![Python](https://img.shields.io/badge/language-Python-blue.svg)](https://www.python.org/)
 [![Model](https://img.shields.io/badge/Model-Qwen--3.5--0.8B-blue.svg)](https://huggingface.co/Qwen/Qwen3.5-0.8B)
