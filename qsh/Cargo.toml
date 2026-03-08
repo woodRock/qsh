@@ -7,7 +7,7 @@ edition = "2024"
 clap = { version = "4.5.31", features = ["derive"] }
 anyhow = "1.0.97"
 tokio = { version = "1.43.0", features = ["full"] }
-candle-core = { version = "0.9.0", features = ["metal"] }
+candle-core = "0.9.0"
 candle-nn = "0.9.0"
 candle-transformers = "0.9.0"
 tokenizers = "0.21.0"
@@ -19,6 +19,9 @@ directories = "6.0.0"
 toml = "0.8.20"
 rusqlite = { version = "0.33.0", features = ["bundled"] }
 colored = "3.0.0"
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+candle-core = { version = "0.9.0", features = ["metal"] }
 
 [dev-dependencies]
 tempfile = "3.17.1"

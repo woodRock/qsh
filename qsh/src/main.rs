@@ -163,10 +163,19 @@ struct RustBridge {
 impl RustBridge {
     fn spawn(model_id: Option<&str>) -> Result<Self> {
         use hf_hub::{Repo, api::sync::Api};
-        let device = if candle_core::utils::metal_is_available() {
-            candle_core::Device::new_metal(0)?
-        } else {
-            candle_core::Device::Cpu
+        let device = {
+            #[cfg(target_vendor = "apple")]
+            {
+                if candle_core::utils::metal_is_available() {
+                    candle_core::Device::new_metal(0)?
+                } else {
+                    candle_core::Device::Cpu
+                }
+            }
+            #[cfg(not(target_vendor = "apple"))]
+            {
+                candle_core::Device::Cpu
+            }
         };
 
         let id = model_id.unwrap_or("Qwen/Qwen3.5-0.8B");
