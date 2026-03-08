@@ -397,9 +397,9 @@ impl Qwen3_5GatedDeltaNet {
 
         let mixed_qkv = if use_precomputed_states {
             let conv_state = self.conv_state.as_mut().unwrap();
-            let conv_state_data = Tensor::cat(&[conv_state.as_ref(), &mixed_qkv], 2)?;
+            let conv_state_data = Tensor::cat(&[&*conv_state, &mixed_qkv], 2)?;
             *conv_state = conv_state_data.narrow(2, 1, self.conv_kernel_size - 1)?;
-            let out = conv_state_data.conv1d(&self.conv1d.weight(), 0, 1, 1, self.conv_dim)?;
+            let out = conv_state_data.conv1d(self.conv1d.weight(), 0, 1, 1, self.conv_dim)?;
             candle_nn::ops::silu(&out)?
         } else {
             let pad = self.conv_kernel_size - 1;
@@ -410,7 +410,7 @@ impl Qwen3_5GatedDeltaNet {
             )?;
             let padded_qkv = Tensor::cat(&[&padding, &mixed_qkv], 2)?;
             self.conv_state = Some(padded_qkv.narrow(2, seq_len, pad)?);
-            let out = padded_qkv.conv1d(&self.conv1d.weight(), 0, 1, 1, self.conv_dim)?;
+            let out = padded_qkv.conv1d(self.conv1d.weight(), 0, 1, 1, self.conv_dim)?;
             candle_nn::ops::silu(&out)?
         };
 
@@ -800,7 +800,7 @@ impl VisionEncoder {
 
         let mut blocks = Vec::with_capacity(cfg.depth);
         for i in 0..cfg.depth {
-            let b_vb = vb.pp(&format!("blocks.{}", i));
+            let b_vb = vb.pp(format!("blocks.{}", i));
             blocks.push(VisionBlock {
                 norm1: QwenLayerNorm::load(vis_hidden, 1e-6, b_vb.pp("norm1"))?,
                 attn_qkv: candle_nn::linear(vis_hidden, vis_hidden * 3, b_vb.pp("attn.qkv"))?,
@@ -849,8 +849,8 @@ impl VisionEncoder {
         let inv_freq: Vec<f32> = (0..self.head_dim / 2)
             .map(|i| 1.0 / 10000.0f32.powf((i as f32 * 2.0) / self.head_dim as f32))
             .collect();
-        let inv_freq = Tensor::new(inv_freq, &dev)?.to_dtype(dtype)?;
-        let t = Tensor::arange(0u32, seq as u32, &dev)?.to_dtype(dtype)?;
+        let inv_freq = Tensor::new(inv_freq, dev)?.to_dtype(dtype)?;
+        let t = Tensor::arange(0u32, seq as u32, dev)?.to_dtype(dtype)?;
         let freqs = t.unsqueeze(1)?.matmul(&inv_freq.unsqueeze(0)?)?;
         let emb = Tensor::cat(&[&freqs, &freqs], D::Minus1)?;
         let cos = emb.cos()?.unsqueeze(0)?.unsqueeze(0)?;

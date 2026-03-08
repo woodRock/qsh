@@ -26,10 +26,10 @@ impl Config {
     }
 
     pub fn load_from(path: PathBuf) -> Self {
-        if let Ok(content) = std::fs::read_to_string(&path) {
-            if let Ok(config) = toml::from_str(&content) {
-                return config;
-            }
+        if let Ok(content) = std::fs::read_to_string(&path)
+            && let Ok(config) = toml::from_str(&content)
+        {
+            return config;
         }
         // If no config, return default but don't save yet
         Self::default()

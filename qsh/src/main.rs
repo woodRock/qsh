@@ -290,10 +290,10 @@ impl RustBridge {
         self.model.clear_kv_cache();
 
         let mut text = generated_text.trim().to_string();
-        if let Some(_start) = text.find("<think>") {
-            if let Some(end) = text.find("</think>") {
-                text = text[end + 8..].trim().to_string();
-            }
+        if let Some(_start) = text.find("<think>")
+            && let Some(end) = text.find("</think>")
+        {
+            text = text[end + 8..].trim().to_string();
         }
 
         if text.starts_with('`') && text.ends_with('`') {
@@ -368,10 +368,10 @@ impl Bridge for PythonBridge {
                 }
                 if let Some(txt) = response.text {
                     let mut text = txt.trim().to_string();
-                    if let Some(_start) = text.find("<think>") {
-                        if let Some(end) = text.find("</think>") {
-                            text = text[end + 8..].trim().to_string();
-                        }
+                    if let Some(_start) = text.find("<think>")
+                        && let Some(end) = text.find("</think>")
+                    {
+                        text = text[end + 8..].trim().to_string();
                     }
                     return Ok(text);
                 }
@@ -456,12 +456,10 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let engine = cli
-        .engine
-        .unwrap_or_else(|| match config.default_engine.as_str() {
-            "rust" => Engine::Rust,
-            _ => Engine::Python,
-        });
+    let engine = cli.engine.unwrap_or(match config.default_engine.as_str() {
+        "rust" => Engine::Rust,
+        _ => Engine::Python,
+    });
 
     let model_id = cli.model.as_deref().or(Some(&config.default_model));
 
