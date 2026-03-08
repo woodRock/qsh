@@ -54,7 +54,7 @@ mod safety;
 
 use config::Config;
 use history::History;
-use colored::*;
+use colored::Colorize;
 
 #[derive(Serialize)]
 struct InferenceRequest {
@@ -144,75 +144,6 @@ impl PythonBridge {
         }
 
         Ok(Self { child, reader })
-    }
-
-    fn query_bool(&mut self, request: &InferenceRequest) -> Result<bool> {
-        let stdin = self.child.stdin.as_mut().context("Failed to open stdin")?;
-        let json = serde_json::to_string(request)?;
-        writeln!(stdin, "{}", json)?;
-        stdin.flush()?;
-
-        loop {
-            let mut line = String::new();
-            if self.reader.read_line(&mut line)? == 0 {
-                anyhow::bail!("Python process exited unexpectedly");
-            }
-            
-            if let Ok(response) = serde_json::from_str::<InferenceResponse>(&line) {
-                if let Some(err) = response.error {
-                    anyhow::bail!("Python Error: {}", err);
-                }
-                if let Some(info) = response.info {
-                    eprintln!("Info: {}", info);
-                    continue;
-                }
-                if let Some(res) = response.result {
-                    return Ok(res);
-                }
-            }
-        }
-    }
-
-    fn query_text(&mut self, request: &InferenceRequest, stream: bool) -> Result<String> {
-        let stdin = self.child.stdin.as_mut().context("Failed to open stdin")?;
-        let json = serde_json::to_string(request)?;
-        writeln!(stdin, "{}", json)?;
-        stdin.flush()?;
-
-        let mut full_text = String::new();
-        loop {
-            let mut line = String::new();
-            if self.reader.read_line(&mut line)? == 0 {
-                anyhow::bail!("Python process exited unexpectedly");
-            }
-            
-            if let Ok(response) = serde_json::from_str::<InferenceResponse>(&line) {
-                if let Some(err) = response.error {
-                    anyhow::bail!("Python Error: {}", err);
-                }
-                if let Some(info) = response.info {
-                    eprintln!("Info: {}", info);
-                    continue;
-                }
-                if let Some(chunk) = response.chunk {
-                    if stream {
-                        print!("{}", chunk);
-                        io::stdout().flush()?;
-                    }
-                    full_text.push_str(&chunk);
-                    continue;
-                }
-                if let Some(txt) = response.text {
-                    let mut text = txt.trim().to_string();
-                    if let Some(_start) = text.find("<think>") {
-                        if let Some(end) = text.find("</think>") {
-                            text = text[end + 8..].trim().to_string();
-                        }
-                    }
-                    return Ok(text);
-                }
-            }
-        }
     }
 }
 
@@ -462,6 +393,7 @@ impl Bridge for RustBridge {
 }
 
 fn main() -> Result<()> {
+    colored::control::set_override(true);
     let cli = Cli::parse();
     let config = Config::load();
     let history = History::open()?;
@@ -560,6 +492,14 @@ fn main() -> Result<()> {
 
                 if config.safety_check && !safety::check_safety(&command) {
                     safety::print_warning(&command);
+                    print!("{}", "Are you absolutely sure you want to proceed? [y/N] ".bold().red());
+                    io::stdout().flush()?;
+                    let mut confirm = String::new();
+                    io::stdin().read_line(&mut confirm)?;
+                    if !confirm.trim().to_lowercase().starts_with('y') {
+                        println!("Aborted.");
+                        return Ok(());
+                    }
                 }
                 
                 loop {

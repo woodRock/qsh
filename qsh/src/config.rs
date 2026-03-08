@@ -32,6 +32,7 @@ impl Config {
         Self::default()
     }
 
+    #[allow(dead_code)]
     pub fn save(&self) -> Result<()> {
         let config_path = Self::get_path();
         if let Some(parent) = config_path.parent() {
