@@ -111,7 +111,11 @@ impl PythonBridge {
             // parent: qsh/target
             // parent.parent: qsh
             // parent.parent.parent: project root
-            if let Some(project_root) = exe_dir.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
+            if let Some(project_root) = exe_dir
+                .parent()
+                .and_then(|p| p.parent())
+                .and_then(|p| p.parent())
+            {
                 python_path = project_root.join("qenv/bin/python3");
                 inference_path = project_root.join("qsh/src/inference.py");
             }

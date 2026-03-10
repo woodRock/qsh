@@ -39,7 +39,10 @@ impl History {
                 .collect::<std::result::Result<Vec<_>, _>>()?;
 
             if !columns.contains(&"outcome".to_string()) {
-                conn.execute("ALTER TABLE history ADD COLUMN outcome TEXT DEFAULT 'none'", [])?;
+                conn.execute(
+                    "ALTER TABLE history ADD COLUMN outcome TEXT DEFAULT 'none'",
+                    [],
+                )?;
             }
         }
 
