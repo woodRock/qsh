@@ -33,7 +33,7 @@ try:
     model = Qwen3_5ForConditionalGeneration.from_pretrained(
         model_name, torch_dtype=dtype, device_map={"": device}, trust_remote_code=True
     )
-    if os.path.exists(LORA_PATH):
+    if os.path.exists(LORA_PATH) and os.path.exists(os.path.join(LORA_PATH, "adapter_config.json")):
         print(json.dumps({"info": "Loading LoRA weights..."}))
         model = PeftModel.from_pretrained(model, LORA_PATH)
         model = model.to(device)
