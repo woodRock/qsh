@@ -60,9 +60,9 @@ echo "Setting up Python environment (qenv)..."
 cd "$INSTALL_ROOT"
 $PYTHON_CMD -m venv qenv
 source qenv/bin/activate
-echo "Installing Python dependencies (transformers, torch, etc.)..."
+echo "Installing Python dependencies (transformers, torch, peft, datasets, etc.)..."
 pip install --upgrade pip --quiet
-pip install --quiet git+https://github.com/huggingface/transformers.git qwen-vl-utils torch torchvision accelerate pillow
+pip install --quiet git+https://github.com/huggingface/transformers.git qwen-vl-utils torch torchvision accelerate pillow peft datasets
 
 # Cleanup
 rm -rf "$TEMP_DIR"
