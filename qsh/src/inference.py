@@ -148,8 +148,8 @@ def run_lora(db_path):
         training_args = TrainingArguments(
             output_dir="./lora_tmp",
             per_device_train_batch_size=1,
-            num_train_epochs=5,
-            learning_rate=5e-5, # Lower learning rate
+            num_train_epochs=3,
+            learning_rate=1e-6, # Drastically lower learning rate to prevent collapse
             logging_steps=1,
             save_strategy="no",
             report_to="none"
