@@ -4,6 +4,7 @@ import json
 import os
 import warnings
 import logging
+import sqlite3
 
 # Suppress warnings
 warnings.filterwarnings("ignore")
@@ -11,13 +12,18 @@ logging.getLogger("transformers").setLevel(logging.ERROR)
 os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
 
 from PIL import Image
-from transformers import Qwen3_5ForConditionalGeneration, AutoTokenizer, AutoProcessor
+from transformers import Qwen3_5ForConditionalGeneration, AutoTokenizer, AutoProcessor, TrainingArguments, Trainer, TrainerCallback
 from qwen_vl_utils import process_vision_info
+from peft import LoraConfig, get_peft_model, PeftModel
+from datasets import Dataset
 
 # Load model and processor
 model_name = os.getenv("QSH_MODEL", "Qwen/Qwen3.5-0.8B")
 device = "mps" if torch.backends.mps.is_available() else "cpu"
 dtype = torch.float16 if device == "mps" else torch.float32
+
+# LoRA Path
+LORA_PATH = os.path.expanduser("~/.local/share/qsh/lora_weights")
 
 print(json.dumps({"info": f"Loading model {model_name} onto {device}..."}))
 sys.stdout.flush()
@@ -27,6 +33,11 @@ try:
     model = Qwen3_5ForConditionalGeneration.from_pretrained(
         model_name, torch_dtype=dtype, device_map={"": device}, trust_remote_code=True
     )
+    if os.path.exists(LORA_PATH):
+        print(json.dumps({"info": "Loading LoRA weights..."}))
+        model = PeftModel.from_pretrained(model, LORA_PATH)
+        model = model.to(device)
+    
     processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
     print(json.dumps({"info": "Model loaded successfully!"}))
     sys.stdout.flush()
@@ -34,6 +45,95 @@ except Exception as e:
     print(json.dumps({"error": str(e)}))
     sys.stdout.flush()
     sys.exit(1)
+
+def run_lora(db_path):
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        # Fetch successful interactions
+        cursor.execute("""
+            SELECT h1.content as prompt, h2.content as command
+            FROM history h1
+            JOIN history h2 ON h1.id = h2.id - 1
+            WHERE h1.role = 'user' AND h2.role = 'assistant' AND h2.outcome = 'execute'
+        """)
+        rows = cursor.fetchall()
+        conn.close()
+
+        if not rows:
+            return "No successful history found to train on."
+
+        print(json.dumps({"info": f"Found {len(rows)} successful interactions for training."}))
+        
+        dataset_data = {"prompt": [], "command": []}
+        for prompt, command in rows:
+            dataset_data["prompt"].append(prompt)
+            dataset_data["command"].append(command)
+        
+        dataset = Dataset.from_dict(dataset_data)
+
+        def tokenize_function(examples):
+            prompts = examples["prompt"]
+            commands = examples["command"]
+            
+            inputs = []
+            for p, c in zip(prompts, commands):
+                # Simple chat template format
+                full_text = f"<|im_start|>user\n{p}<|im_end|>\n<|im_start|>assistant\n{c}<|im_end|>"
+                inputs.append(full_text)
+            
+            model_inputs = processor.tokenizer(inputs, truncation=True, padding="max_length", max_length=128)
+            model_inputs["labels"] = model_inputs["input_ids"].copy()
+            return model_inputs
+
+        tokenized_dataset = dataset.map(tokenize_function, batched=True, remove_columns=dataset.column_names)
+
+        lora_config = LoraConfig(
+            r=8,
+            lora_alpha=16,
+            target_modules=["q_proj", "v_proj"],
+            lora_dropout=0.05,
+            bias="none",
+            task_type="CAUSAL_LM"
+        )
+
+        global model
+        # If it's already a PeftModel, we might want to merge and re-wrap or just keep training
+        # For simplicity, if it's already Peft, we just use it. If not, we get it.
+        if not isinstance(model, PeftModel):
+            model = get_peft_model(model, lora_config)
+
+        training_args = TrainingArguments(
+            output_dir="./lora_tmp",
+            per_device_train_batch_size=1,
+            num_train_epochs=3,
+            learning_rate=2e-4,
+            logging_steps=1,
+            save_strategy="no",
+            report_to="none"
+        )
+
+        class ProgressCallback(TrainerCallback):
+            def on_log(self, args, state, control, logs=None, **kwargs):
+                if state.max_steps > 0:
+                    progress = (state.global_step / state.max_steps) * 100
+                    print(json.dumps({"chunk": f"\rProgress: {progress:.1f}%"}))
+                    sys.stdout.flush()
+
+        trainer = Trainer(
+            model=model,
+            args=training_args,
+            train_dataset=tokenized_dataset,
+            callbacks=[ProgressCallback()]
+        )
+
+        trainer.train()
+        model.save_pretrained(LORA_PATH)
+        
+        return "LoRA weights updated successfully!"
+    except Exception as e:
+        return f"Error during LoRA training: {str(e)}"
 
 def run_vision(image_path, query):
     messages = [
@@ -211,6 +311,10 @@ if __name__ == "__main__":
             elif mode == "explain":
                 cmd = data.get("command")
                 result_text = run_explain(cmd)
+                print(json.dumps({"text": result_text}))
+            elif mode == "lora":
+                db_path = data.get("path")
+                result_text = run_lora(db_path)
                 print(json.dumps({"text": result_text}))
             sys.stdout.flush()
         except Exception as e:

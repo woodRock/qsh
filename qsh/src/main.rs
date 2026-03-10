@@ -45,6 +45,8 @@ enum Commands {
         /// The query to analyze the images (e.g., "is this a screenshot of software code?")
         query: String,
     },
+    /// Fine-tune the model with LoRA based on your execution history.
+    Lora,
 }
 
 use colored::Colorize;
@@ -101,6 +103,18 @@ impl PythonBridge {
                 .parent()
                 .context("Failed to get parent dir")?
                 .join("src/inference.py");
+        }
+
+        if !python_path.exists() {
+            // Check for qsh/src/inference.py from workspace root
+            // exe_dir: qsh/target/debug
+            // parent: qsh/target
+            // parent.parent: qsh
+            // parent.parent.parent: project root
+            if let Some(project_root) = exe_dir.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
+                python_path = project_root.join("qenv/bin/python3");
+                inference_path = project_root.join("qsh/src/inference.py");
+            }
         }
 
         if !python_path.exists() {
@@ -469,6 +483,20 @@ fn main() -> Result<()> {
     };
 
     match cli.command {
+        Some(Commands::Lora) => {
+            let request = InferenceRequest {
+                mode: "lora".to_string(),
+                query: None,
+                path: Some(History::get_path().to_string_lossy().to_string()),
+                text: None,
+                prompt: None,
+                command: None,
+                history: None,
+            };
+            println!("{}", "Starting LoRA fine-tuning...".bold().cyan());
+            bridge.query_text(&request, true)?;
+            println!("{}", "\nFine-tuning complete!".bold().green());
+        }
         Some(Commands::Filter { query }) => {
             let stdin = io::stdin();
             for line in stdin.lock().lines() {
@@ -541,8 +569,8 @@ fn main() -> Result<()> {
                     return Ok(());
                 }
 
-                history.add_message("user", &prompt)?;
-                history.add_message("assistant", &command)?;
+                history.add_message("user", &prompt, None)?;
+                history.add_message("assistant", &command, None)?;
 
                 if config.safety_check && !safety::check_safety(&command) {
                     safety::print_warning(&command);
@@ -556,6 +584,7 @@ fn main() -> Result<()> {
                     let mut confirm = String::new();
                     io::stdin().read_line(&mut confirm)?;
                     if !confirm.trim().to_lowercase().starts_with('y') {
+                        history.update_last_outcome("abort")?;
                         println!("Aborted.");
                         return Ok(());
                     }
@@ -584,6 +613,7 @@ fn main() -> Result<()> {
                         continue;
                     } else if choice == "E" || choice.is_empty() {
                         println!("Executing: {}", command);
+                        history.update_last_outcome("execute")?;
                         Command::new("bash")
                             .arg("-c")
                             .arg(&command)
@@ -591,6 +621,7 @@ fn main() -> Result<()> {
                             .wait()?;
                         break;
                     } else if choice.to_lowercase() == "a" {
+                        history.update_last_outcome("abort")?;
                         println!("Aborted.");
                         break;
                     } else {

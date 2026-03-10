@@ -9,10 +9,10 @@ fn test_history_basic() {
     let history = History::open_at(path).expect("Failed to open history");
 
     history
-        .add_message("user", "Hello")
+        .add_message("user", "Hello", None)
         .expect("Failed to add message");
     history
-        .add_message("assistant", "Hi there")
+        .add_message("assistant", "Hi there", None)
         .expect("Failed to add message");
 
     let messages = history
@@ -34,7 +34,7 @@ fn test_history_limit() {
 
     for i in 0..10 {
         history
-            .add_message("user", &format!("Message {}", i))
+            .add_message("user", &format!("Message {}", i), None)
             .unwrap();
     }
 
@@ -54,7 +54,7 @@ fn test_history_clear() {
 
     let history = History::open_at(path).expect("Failed to open history");
 
-    history.add_message("user", "test").unwrap();
+    history.add_message("user", "test", None).unwrap();
     history.clear().expect("Failed to clear history");
 
     let messages = history

@@ -22,17 +22,42 @@ impl History {
                 id INTEGER PRIMARY KEY,
                 role TEXT NOT NULL,
                 content TEXT NOT NULL,
+                outcome TEXT DEFAULT 'none',
                 timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
             )",
             [],
         )?;
+
+        // Migration: Add outcome column if it doesn't exist
+        {
+            let mut stmt = conn.prepare("PRAGMA table_info(history)")?;
+            let columns: Vec<String> = stmt
+                .query_map([], |row| {
+                    let name: String = row.get(1)?;
+                    Ok(name.to_lowercase())
+                })?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+
+            if !columns.contains(&"outcome".to_string()) {
+                conn.execute("ALTER TABLE history ADD COLUMN outcome TEXT DEFAULT 'none'", [])?;
+            }
+        }
+
         Ok(Self { conn })
     }
 
-    pub fn add_message(&self, role: &str, content: &str) -> Result<()> {
+    pub fn add_message(&self, role: &str, content: &str, outcome: Option<&str>) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO history (role, content) VALUES (?1, ?2)",
-            params![role, content],
+            "INSERT INTO history (role, content, outcome) VALUES (?1, ?2, ?3)",
+            params![role, content, outcome.unwrap_or("none")],
+        )?;
+        Ok(())
+    }
+
+    pub fn update_last_outcome(&self, outcome: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE history SET outcome = ?1 WHERE id = (SELECT MAX(id) FROM history WHERE role = 'assistant')",
+            params![outcome],
         )?;
         Ok(())
     }
@@ -57,7 +82,7 @@ impl History {
         Ok(())
     }
 
-    fn get_path() -> PathBuf {
+    pub fn get_path() -> PathBuf {
         if let Some(dirs) = ProjectDirs::from("com", "qwen", "qsh") {
             return dirs.data_dir().join("history.db");
         }
