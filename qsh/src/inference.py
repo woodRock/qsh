@@ -77,15 +77,57 @@ def run_lora(db_path):
             prompts = examples["prompt"]
             commands = examples["command"]
             
-            inputs = []
-            for p, c in zip(prompts, commands):
-                # Simple chat template format
-                full_text = f"<|im_start|>user\n{p}<|im_end|>\n<|im_start|>assistant\n{c}<|im_end|>"
-                inputs.append(full_text)
+            input_ids_list = []
+            labels_list = []
             
-            model_inputs = processor.tokenizer(inputs, truncation=True, padding="max_length", max_length=128)
-            model_inputs["labels"] = model_inputs["input_ids"].copy()
-            return model_inputs
+            for p, c in zip(prompts, commands):
+                messages = [
+                    {"role": "system", "content": "You are a Unix shell expert. Provide the valid Bash command for the user's request. Output ONLY the command, no reasoning, no explanation."},
+                    {"role": "user", "content": p},
+                    {"role": "assistant", "content": c}
+                ]
+                
+                # Use the processor's chat template to stay consistent with inference
+                full_text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+                
+                # Tokenize
+                tokenized = processor.tokenizer(full_text, truncation=True, max_length=128, padding=False)
+                input_ids = tokenized["input_ids"]
+                
+                # Mask out the prompt in labels. 
+                # We find where the assistant's response starts.
+                # In Qwen chat template, the assistant response starts after <|im_start|>assistant\n
+                response_start_marker = processor.tokenizer.encode("<|im_start|>assistant\n", add_special_tokens=False)
+                
+                # Find the marker in input_ids
+                labels = [ -100 ] * len(input_ids)
+                for i in range(len(input_ids) - len(response_start_marker)):
+                    if input_ids[i:i+len(response_start_marker)] == response_start_marker:
+                        # Found it! Everything from here to the end is labels
+                        start_idx = i + len(response_start_marker)
+                        labels[start_idx:] = input_ids[start_idx:]
+                        break
+                
+                input_ids_list.append(input_ids)
+                labels_list.append(labels)
+            
+            # Manually pad because we have varying lengths
+            max_len = max(len(ids) for ids in input_ids_list)
+            padded_input_ids = []
+            padded_labels = []
+            padded_attention_mask = []
+            
+            for ids, labs in zip(input_ids_list, labels_list):
+                padding_len = max_len - len(ids)
+                padded_input_ids.append(ids + [processor.tokenizer.pad_token_id] * padding_len)
+                padded_labels.append(labs + [-100] * padding_len)
+                padded_attention_mask.append([1] * len(ids) + [0] * padding_len)
+
+            return {
+                "input_ids": padded_input_ids,
+                "labels": padded_labels,
+                "attention_mask": padded_attention_mask
+            }
 
         tokenized_dataset = dataset.map(tokenize_function, batched=True, remove_columns=dataset.column_names)
 
@@ -100,15 +142,14 @@ def run_lora(db_path):
 
         global model
         # If it's already a PeftModel, we might want to merge and re-wrap or just keep training
-        # For simplicity, if it's already Peft, we just use it. If not, we get it.
         if not isinstance(model, PeftModel):
             model = get_peft_model(model, lora_config)
 
         training_args = TrainingArguments(
             output_dir="./lora_tmp",
             per_device_train_batch_size=1,
-            num_train_epochs=3,
-            learning_rate=2e-4,
+            num_train_epochs=5,
+            learning_rate=5e-5, # Lower learning rate
             logging_steps=1,
             save_strategy="no",
             report_to="none"
