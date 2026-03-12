@@ -39,6 +39,8 @@ try:
         model = model.to(device)
     
     processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+    if processor.tokenizer.pad_token_id is None:
+        processor.tokenizer.pad_token = processor.tokenizer.eos_token
     print(json.dumps({"info": "Model loaded successfully!"}))
     sys.stdout.flush()
 except Exception as e:
@@ -88,25 +90,24 @@ def run_lora(db_path):
                 ]
                 
                 # Use the processor's chat template to stay consistent with inference
+                # We tokenize the prompt part and the full text to find the split point
+                prompt_messages = messages[:-1]
+                prompt_text = processor.apply_chat_template(prompt_messages, tokenize=False, add_generation_prompt=True)
                 full_text = processor.apply_chat_template(messages, tokenize=False, add_generation_prompt=False)
+                if not full_text.endswith(processor.tokenizer.eos_token):
+                    full_text += processor.tokenizer.eos_token
                 
                 # Tokenize
-                tokenized = processor.tokenizer(full_text, truncation=True, max_length=128, padding=False)
-                input_ids = tokenized["input_ids"]
+                tokenized_prompt = processor.tokenizer(prompt_text, truncation=True, max_length=128, padding=False, add_special_tokens=False)
+                tokenized_full = processor.tokenizer(full_text, truncation=True, max_length=128, padding=False, add_special_tokens=False)
                 
-                # Mask out the prompt in labels. 
-                # We find where the assistant's response starts.
-                # In Qwen chat template, the assistant response starts after <|im_start|>assistant\n
-                response_start_marker = processor.tokenizer.encode("<|im_start|>assistant\n", add_special_tokens=False)
+                input_ids = tokenized_full["input_ids"]
+                prompt_len = len(tokenized_prompt["input_ids"])
                 
-                # Find the marker in input_ids
-                labels = [ -100 ] * len(input_ids)
-                for i in range(len(input_ids) - len(response_start_marker)):
-                    if input_ids[i:i+len(response_start_marker)] == response_start_marker:
-                        # Found it! Everything from here to the end is labels
-                        start_idx = i + len(response_start_marker)
-                        labels[start_idx:] = input_ids[start_idx:]
-                        break
+                # Mask out the prompt in labels
+                labels = [-100] * len(input_ids)
+                if len(input_ids) > prompt_len:
+                    labels[prompt_len:] = input_ids[prompt_len:]
                 
                 input_ids_list.append(input_ids)
                 labels_list.append(labels)
@@ -132,27 +133,35 @@ def run_lora(db_path):
         tokenized_dataset = dataset.map(tokenize_function, batched=True, remove_columns=dataset.column_names)
 
         lora_config = LoraConfig(
-            r=8,
+            r=8, 
             lora_alpha=16,
-            target_modules=["q_proj", "v_proj"],
+            target_modules=["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
             lora_dropout=0.05,
             bias="none",
             task_type="CAUSAL_LM"
         )
 
         global model
-        # If it's already a PeftModel, we might want to merge and re-wrap or just keep training
-        if not isinstance(model, PeftModel):
-            model = get_peft_model(model, lora_config)
+        # If it's already a PeftModel, start fresh for a new training session
+        # Use get_base_model() to avoid merging old adapters into the base model (which causes drift)
+        if isinstance(model, PeftModel):
+            print(json.dumps({"info": "Discarding existing LoRA for fresh training..."}))
+            model = model.get_base_model()
+
+        model = get_peft_model(model, lora_config)
 
         training_args = TrainingArguments(
             output_dir="./lora_tmp",
-            per_device_train_batch_size=1,
+            per_device_train_batch_size=4,
+            gradient_accumulation_steps=4,
             num_train_epochs=3,
-            learning_rate=1e-6, # Drastically lower learning rate to prevent collapse
+            learning_rate=1e-4,
             logging_steps=1,
             save_strategy="no",
-            report_to="none"
+            report_to="none",
+            bf16=False, # Use float32 for stability on MPS if needed
+            fp16=False,
+            max_grad_norm=0.3,
         )
 
         class ProgressCallback(TrainerCallback):

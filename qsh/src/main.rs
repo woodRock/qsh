@@ -94,6 +94,16 @@ impl PythonBridge {
         let mut python_path = exe_dir.join("qenv/bin/python3");
         let mut inference_path = exe_dir.join("src/inference.py");
 
+        // First, check if we're in a workspace and prefer that inference.py
+        if let Some(project_root) = exe_dir.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
+             let ws_inference = project_root.join("qsh/src/inference.py");
+             let ws_python = project_root.join("qenv/bin/python3");
+             if ws_inference.exists() && ws_python.exists() {
+                 python_path = ws_python;
+                 inference_path = ws_inference;
+             }
+        }
+
         if !python_path.exists() {
             python_path = exe_dir
                 .parent()
