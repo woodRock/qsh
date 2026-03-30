@@ -7,7 +7,18 @@ use std::path::PathBuf;
 pub struct Config {
     pub default_engine: String,
     pub default_model: String,
+    pub llama_cpp: LlamaCppConfig,
     pub safety_check: bool,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct LlamaCppConfig {
+    pub server_url: String,
+    pub server_binary: Option<String>,
+    pub model_path: Option<String>,
+    pub turbo_k: String,
+    pub turbo_v: String,
+    pub flash_attn: bool,
 }
 
 impl Default for Config {
@@ -15,6 +26,14 @@ impl Default for Config {
         Self {
             default_engine: "python".to_string(),
             default_model: "Qwen/Qwen3.5-0.8B".to_string(),
+            llama_cpp: LlamaCppConfig {
+                server_url: "http://localhost:8080".to_string(),
+                server_binary: None,
+                model_path: None,
+                turbo_k: "q8_0".to_string(),
+                turbo_v: "turbo4".to_string(),
+                flash_attn: true,
+            },
             safety_check: true,
         }
     }
