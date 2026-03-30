@@ -365,6 +365,13 @@ impl LlamaCppBridge {
                .arg("--cache-type-v").arg(&config.llama_cpp.turbo_v)
                .arg("--port").arg(url.split(':').last().unwrap_or("8080"));
 
+            // Add vision projector if available
+            if let Some(mmproj) = &config.llama_cpp.mmproj_path {
+                if std::path::Path::new(mmproj).exists() {
+                    cmd.arg("--mmproj").arg(mmproj);
+                }
+            }
+
             if config.llama_cpp.flash_attn {
                 cmd.arg("-fa").arg("on");
             }
@@ -417,22 +424,42 @@ impl LlamaCppBridge {
 
 impl Bridge for LlamaCppBridge {
     fn query_bool(&mut self, request: &InferenceRequest) -> Result<bool> {
-        let prompt = match request.mode.as_str() {
-            "filter" => format!(
-                "<|im_start|>system\nYou are a text filter. Answer YES or NO.<|im_end|>\n<|im_start|>user\nIs the following line related to '{}'?\nLine: {}\nAnswer:<|im_end|>\n<|im_start|>assistant\n",
-                request.query.as_ref().unwrap(),
-                request.text.as_ref().unwrap()
-            ),
-            "vision" => anyhow::bail!("Vision is not yet supported in LlamaCpp engine"),
-            _ => anyhow::bail!("Unsupported bool mode"),
-        };
-
         let client = reqwest::blocking::Client::new();
-        let body = serde_json::json!({
-            "prompt": prompt,
-            "n_predict": 5,
+        let mut body = serde_json::json!({
+            "n_predict": 10,
             "stop": ["<|im_end|>"]
         });
+
+        match request.mode.as_str() {
+            "filter" => {
+                let prompt = format!(
+                    "<|im_start|>system\nYou are a text filter. Answer YES or NO.<|im_end|>\n<|im_start|>user\nIs the following line related to '{}'?\nLine: {}\nAnswer:<|im_end|>\n<|im_start|>assistant\n",
+                    request.query.as_ref().unwrap(),
+                    request.text.as_ref().unwrap()
+                );
+                body["prompt"] = serde_json::Value::String(prompt);
+            }
+            "vision" => {
+                let path = request.path.as_ref().unwrap();
+                let query = request.query.as_ref().unwrap();
+                
+                // Read image and convert to base64
+                let image_data = std::fs::read(path)?;
+                let base64_image = base64::Engine::encode(&base64::engine::general_purpose::STANDARD, image_data);
+                
+                let prompt = format!(
+                    "<|im_start|>system\nYou are a vision assistant. Answer YES or NO.<|im_end|>\n<|im_start|>user\nAnalyze the attached image. Question: {} Answer YES or NO.<|im_end|>\n<|im_start|>assistant\n",
+                    query
+                );
+                
+                body["prompt"] = serde_json::Value::String(prompt);
+                body["image_data"] = serde_json::json!([{
+                    "data": base64_image,
+                    "id": 1
+                }]);
+            }
+            _ => anyhow::bail!("Unsupported bool mode"),
+        };
 
         let resp = client.post(format!("{}/completion", self.url))
             .json(&body)

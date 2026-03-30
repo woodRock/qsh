@@ -146,6 +146,11 @@ if [ "$ENGINE" == "llamacpp" ]; then
     MODEL_URL="https://huggingface.co/$REPO_NAME/resolve/main/$MODEL_FILENAME"
     MODEL_DEST="$INSTALL_ROOT/models/$MODEL_FILENAME"
     
+    # 7.3 Download Vision Projector (mmproj)
+    MMPROJ_FILENAME="mmproj-BF16.gguf"
+    MMPROJ_URL="https://huggingface.co/$REPO_NAME/resolve/main/$MMPROJ_FILENAME"
+    MMPROJ_DEST="$INSTALL_ROOT/models/$MMPROJ_FILENAME"
+    
     mkdir -p "$INSTALL_ROOT/models"
     
     if [ ! -f "$MODEL_DEST" ]; then
@@ -157,7 +162,14 @@ if [ "$ENGINE" == "llamacpp" ]; then
         echo "✅ Model $MODEL_FILENAME already exists at $MODEL_DEST"
     fi
 
-    # Update config with binary and model path
+    if [ ! -f "$MMPROJ_DEST" ]; then
+        echo "📥 Downloading Vision Projector $MMPROJ_FILENAME..."
+        curl -L "$MMPROJ_URL" -o "$MMPROJ_DEST"
+    else
+        echo "✅ Vision Projector $MMPROJ_FILENAME already exists."
+    fi
+
+    # Update config with binary, model path and mmproj
     cat << EOF > "$CONFIG_FILE"
 default_engine = "$ENGINE"
 default_model = "$MODEL"
@@ -167,6 +179,7 @@ safety_check = true
 server_url = "http://localhost:8080"
 server_binary = "$SERVER_BIN"
 model_path = "$MODEL_DEST"
+mmproj_path = "$MMPROJ_DEST"
 turbo_k = "q8_0"
 turbo_v = "turbo4"
 flash_attn = true
