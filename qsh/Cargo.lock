@@ -2638,6 +2638,7 @@ dependencies = [
  "directories",
  "hf-hub",
  "image",
+ "libc",
  "predicates",
  "reqwest",
  "rusqlite",

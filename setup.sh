@@ -125,17 +125,17 @@ if [ "$ENGINE" == "llamacpp" ]; then
 
     echo ""
     echo "🏗️  Setting up TurboQuant+ (llama.cpp fork)..."
-    TURBO_DIR="$INSTALL_ROOT/turboquant_plus"
+    TURBO_DIR="$INSTALL_ROOT/llama-cpp-turboquant"
     if [ ! -d "$TURBO_DIR" ]; then
-        git clone https://github.com/TheTom/turboquant_plus "$TURBO_DIR"
+        git clone https://github.com/TheTom/llama-cpp-turboquant.git "$TURBO_DIR"
     fi
     
     cd "$TURBO_DIR"
-    mkdir -p build
-    cd build
+    git checkout feature/turboquant-kv-cache --quiet
+    
     echo "Building llama-server with Metal support (this may take a few minutes)..."
-    cmake .. -DGGML_METAL=ON
-    cmake --build . --config Release --target llama-server -j$(sysctl -n hw.ncpu)
+    cmake -B build -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DCMAKE_BUILD_TYPE=Release
+    cmake --build build --config Release --target llama-server -j$(sysctl -n hw.ncpu)
 
     SERVER_BIN="$TURBO_DIR/build/bin/llama-server"
     

@@ -358,7 +358,7 @@ impl LlamaCppBridge {
         if let Some(bin) = &config.llama_cpp.server_binary {
             let model = config.llama_cpp.model_path.as_ref().context("model_path is required for LlamaCpp engine if server is not running")?;
             
-            eprintln!("Starting llama-server with TurboQuant+ optimizations...");
+            eprintln!("Starting persistent llama-server with TurboQuant+ optimizations...");
             let mut cmd = Command::new(bin);
             cmd.arg("-m").arg(model)
                .arg("--cache-type-k").arg(&config.llama_cpp.turbo_k)
@@ -366,12 +366,28 @@ impl LlamaCppBridge {
                .arg("--port").arg(url.split(':').last().unwrap_or("8080"));
 
             if config.llama_cpp.flash_attn {
-                cmd.arg("-fa");
+                cmd.arg("-fa").arg("on");
             }
 
-            // Quiet mode for server stdout to not clutter qsh
+            // Disconnect from terminal to allow persistence
             cmd.stdout(Stdio::null());
-            cmd.stderr(Stdio::piped()); // Capture stderr for debugging if it fails
+            cmd.stderr(Stdio::null());
+            cmd.stdin(Stdio::null());
+
+            // On Unix-like systems, we want the process to survive after qsh exits
+            #[cfg(unix)]
+            {
+                use std::os::unix::process::CommandExt;
+                unsafe {
+                    cmd.pre_exec(|| {
+                        // Create a new session to detach from the terminal
+                        if libc::setsid() == -1 {
+                            return Err(std::io::Error::last_os_error());
+                        }
+                        Ok(())
+                    });
+                }
+            }
 
             let child = cmd.spawn().context(format!("Failed to start llama-server at {}", bin))?;
             
@@ -379,6 +395,7 @@ impl LlamaCppBridge {
             eprintln!("Waiting for llama-server to initialize (this can take 30-60s for large models)...");
             let start = std::time::Instant::now();
             loop {
+                // ... rest of health check loop
                 if let Ok(resp) = client.get(format!("{}/health", url)).send() {
                     if resp.status().is_success() {
                         eprintln!("llama-server is ready!");
@@ -482,10 +499,24 @@ impl Bridge for LlamaCppBridge {
                     }
                 }
             }
-            Ok(full_text)
+            
+            // Clean up thinking tags
+            let mut text = full_text.trim().to_string();
+            if let Some(_start) = text.find("<think>")
+                && let Some(end) = text.find("</think>")
+            {
+                text = text[end + 8..].trim().to_string();
+            }
+            Ok(text)
         } else {
             let json: serde_json::Value = resp.json()?;
-            Ok(json["content"].as_str().unwrap_or("").to_string())
+            let mut text = json["content"].as_str().unwrap_or("").trim().to_string();
+            if let Some(_start) = text.find("<think>")
+                && let Some(end) = text.find("</think>")
+            {
+                text = text[end + 8..].trim().to_string();
+            }
+            Ok(text)
         }
     }
 }
