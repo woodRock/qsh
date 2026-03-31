@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./qsh/target/release/qsh *)",
+      "Bash(curl *)",
+      "Bash(cat *)",
+      "Bash(llama-server *)",
+      "Bash(ls *)",
+      "Bash(echo)",
+      "Bash(python3 *)",
+      "Bash(import *)",
+      "Bash(prompt *)",
+      "Bash(cat)",
+      "Bash(printf)",
+      "Bash(kill *)",
+      "Bash(sleep *)",
+      "Bash(timeout *)",
+      "Bash(/users/woodj/.local/share/qsh/llama-cpp-turboquant/build/bin/llama-server *)",
+      "Bash(find *)",
+      "Bash(cargo build *)",
+      "Bash(pkill *)",
+      "Bash(system_profiler *)",
+      "Bash(vm_stat)",
+      "Bash(cargo run *)",
+      "Bash(/opt/homebrew/bin/python3 *)",
+      "Bash(~/.local/share/qsh/qenv/bin/python3 *)"
+    ]
+  },
+  "$version": 3
+}

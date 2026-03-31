@@ -282,7 +282,7 @@ def run_bash(prompt, history=None):
     generation_kwargs = dict(
         **inputs,
         streamer=streamer,
-        max_new_tokens=128,
+        max_new_tokens=1024,
         pad_token_id=processor.tokenizer.eos_token_id,
         do_sample=False
     )

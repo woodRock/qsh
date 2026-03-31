@@ -272,6 +272,7 @@ impl RustBridge {
             .get_ids()
             .to_vec();
         let mut generated_text = String::new();
+        let mut inside_think = false;
 
         for i in 0..max_tokens {
             let input = candle_core::Tensor::new(tokens.as_slice(), &self.device)?.unsqueeze(0)?;
@@ -304,12 +305,40 @@ impl RustBridge {
                 .decode(&[next_token], true)
                 .map_err(anyhow::Error::msg)?;
 
-            if stream {
-                print!("{}", decoded);
-                io::stdout().flush()?;
+            generated_text.push_str(&decoded);
+
+            let old_inside_think = inside_think;
+            if decoded.contains("<think>") {
+                inside_think = true;
+            }
+            if decoded.contains("</think>") {
+                inside_think = false;
             }
 
-            generated_text.push_str(&decoded);
+            if stream {
+                if !inside_think && !old_inside_think && !decoded.contains("<think>") && !decoded.contains("</think>") {
+                    print!("{}", decoded);
+                    io::stdout().flush()?;
+                } else if !inside_think && old_inside_think {
+                    // Just finished thinking
+                    if let Some(pos) = decoded.find("</think>") {
+                        let after = &decoded[pos + 8..];
+                        if !after.is_empty() {
+                            print!("{}", after);
+                            io::stdout().flush()?;
+                        }
+                    }
+                } else if inside_think && !old_inside_think {
+                    // Just started thinking
+                    if let Some(pos) = decoded.find("<think>") {
+                        let before = &decoded[..pos];
+                        if !before.is_empty() {
+                            print!("{}", before);
+                            io::stdout().flush()?;
+                        }
+                    }
+                }
+            }
 
             if i == 0 {
                 self.model.clear_kv_cache();
@@ -319,10 +348,12 @@ impl RustBridge {
         self.model.clear_kv_cache();
 
         let mut text = generated_text.trim().to_string();
-        if let Some(_start) = text.find("<think>")
-            && let Some(end) = text.find("</think>")
-        {
-            text = text[end + 8..].trim().to_string();
+        if let Some(start) = text.find("<think>") {
+            if let Some(end) = text.find("</think>") {
+                text = text[end + 8..].trim().to_string();
+            } else {
+                text = text[start + 7..].trim().to_string();
+            }
         }
 
         if text.starts_with('`') && text.ends_with('`') {
@@ -363,7 +394,8 @@ impl LlamaCppBridge {
             cmd.arg("-m").arg(model)
                .arg("--cache-type-k").arg(&config.llama_cpp.turbo_k)
                .arg("--cache-type-v").arg(&config.llama_cpp.turbo_v)
-               .arg("--port").arg(url.split(':').last().unwrap_or("8080"));
+               .arg("--port").arg(url.split(':').last().unwrap_or("8080"))
+               .arg("--ctx-size").arg("2048");
 
             // Add vision projector if available
             if let Some(mmproj) = &config.llama_cpp.mmproj_path {
@@ -373,12 +405,14 @@ impl LlamaCppBridge {
             }
 
             if config.llama_cpp.flash_attn {
-                cmd.arg("-fa").arg("on");
+                cmd.arg("--flash-attn").arg("on");
             }
 
             // Disconnect from terminal to allow persistence
             cmd.stdout(Stdio::null());
-            cmd.stderr(Stdio::null());
+            
+            let log_file = std::fs::File::create("/tmp/qsh_llama_server.log")?;
+            cmd.stderr(Stdio::from(log_file));
             cmd.stdin(Stdio::null());
 
             // On Unix-like systems, we want the process to survive after qsh exits
@@ -486,7 +520,7 @@ impl Bridge for LlamaCppBridge {
                     "<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
                     request.prompt.as_ref().unwrap()
                 ));
-                (p, 128)
+                (p, 1024)
             }
             "explain" => (
                 format!(
@@ -513,15 +547,45 @@ impl Bridge for LlamaCppBridge {
         if stream {
             let mut full_text = String::new();
             let reader = io::BufReader::new(resp);
+            let mut inside_think = false;
             for line in reader.lines() {
                 let line = line?;
                 if line.starts_with("data: ") {
                     let json_str = &line[6..];
                     if let Ok(json) = serde_json::from_str::<serde_json::Value>(json_str) {
                         if let Some(content) = json["content"].as_str() {
-                            print!("{}", content);
-                            io::stdout().flush()?;
                             full_text.push_str(content);
+                            
+                            let old_inside_think = inside_think;
+                            if content.contains("<think>") {
+                                inside_think = true;
+                            }
+                            if content.contains("</think>") {
+                                inside_think = false;
+                            }
+
+                            if !inside_think && !old_inside_think && !content.contains("<think>") && !content.contains("</think>") {
+                                print!("{}", content);
+                                io::stdout().flush()?;
+                            } else if !inside_think && old_inside_think {
+                                // Just finished thinking
+                                if let Some(pos) = content.find("</think>") {
+                                    let after = &content[pos + 8..];
+                                    if !after.is_empty() {
+                                        print!("{}", after);
+                                        io::stdout().flush()?;
+                                    }
+                                }
+                            } else if inside_think && !old_inside_think {
+                                // Just started thinking
+                                if let Some(pos) = content.find("<think>") {
+                                    let before = &content[..pos];
+                                    if !before.is_empty() {
+                                        print!("{}", before);
+                                        io::stdout().flush()?;
+                                    }
+                                }
+                            }
                         }
                     }
                 }
@@ -529,19 +593,23 @@ impl Bridge for LlamaCppBridge {
             
             // Clean up thinking tags
             let mut text = full_text.trim().to_string();
-            if let Some(_start) = text.find("<think>")
-                && let Some(end) = text.find("</think>")
-            {
-                text = text[end + 8..].trim().to_string();
+            if let Some(start) = text.find("<think>") {
+                if let Some(end) = text.find("</think>") {
+                    text = text[end + 8..].trim().to_string();
+                } else {
+                    text = text[start + 7..].trim().to_string();
+                }
             }
             Ok(text)
         } else {
             let json: serde_json::Value = resp.json()?;
             let mut text = json["content"].as_str().unwrap_or("").trim().to_string();
-            if let Some(_start) = text.find("<think>")
-                && let Some(end) = text.find("</think>")
-            {
-                text = text[end + 8..].trim().to_string();
+            if let Some(start) = text.find("<think>") {
+                if let Some(end) = text.find("</think>") {
+                    text = text[end + 8..].trim().to_string();
+                } else {
+                    text = text[start + 7..].trim().to_string();
+                }
             }
             Ok(text)
         }
@@ -588,6 +656,7 @@ impl Bridge for PythonBridge {
         stdin.flush()?;
 
         let mut full_text = String::new();
+        let mut inside_think = false;
         loop {
             let mut line = String::new();
             if self.reader.read_line(&mut line)? == 0 {
@@ -603,19 +672,50 @@ impl Bridge for PythonBridge {
                     continue;
                 }
                 if let Some(chunk) = response.chunk {
-                    if stream {
-                        print!("{}", chunk);
-                        io::stdout().flush()?;
-                    }
                     full_text.push_str(&chunk);
+                    
+                    let old_inside_think = inside_think;
+                    if chunk.contains("<think>") {
+                        inside_think = true;
+                    }
+                    if chunk.contains("</think>") {
+                        inside_think = false;
+                    }
+
+                    if stream {
+                        if !inside_think && !old_inside_think && !chunk.contains("<think>") && !chunk.contains("</think>") {
+                            print!("{}", chunk);
+                            io::stdout().flush()?;
+                        } else if !inside_think && old_inside_think {
+                            // Just finished thinking
+                            if let Some(pos) = chunk.find("</think>") {
+                                let after = &chunk[pos + 8..];
+                                if !after.is_empty() {
+                                    print!("{}", after);
+                                    io::stdout().flush()?;
+                                }
+                            }
+                        } else if inside_think && !old_inside_think {
+                            // Just started thinking
+                            if let Some(pos) = chunk.find("<think>") {
+                                let before = &chunk[..pos];
+                                if !before.is_empty() {
+                                    print!("{}", before);
+                                    io::stdout().flush()?;
+                                }
+                            }
+                        }
+                    }
                     continue;
                 }
                 if let Some(txt) = response.text {
                     let mut text = txt.trim().to_string();
-                    if let Some(_start) = text.find("<think>")
-                        && let Some(end) = text.find("</think>")
-                    {
-                        text = text[end + 8..].trim().to_string();
+                    if let Some(start) = text.find("<think>") {
+                        if let Some(end) = text.find("</think>") {
+                            text = text[end + 8..].trim().to_string();
+                        } else {
+                            text = text[start + 7..].trim().to_string();
+                        }
                     }
                     return Ok(text);
                 }
@@ -672,7 +772,7 @@ impl Bridge for RustBridge {
                     "<|im_start|>user\n{}<|im_end|>\n<|im_start|>assistant\n",
                     request.prompt.as_ref().unwrap()
                 ));
-                (p, 128)
+                (p, 1024)
             }
             "explain" => (
                 format!(
