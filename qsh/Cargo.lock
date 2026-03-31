@@ -2640,6 +2640,7 @@ dependencies = [
  "hf-hub",
  "image",
  "libc",
+ "num_cpus",
  "predicates",
  "reqwest",
  "rusqlite",
