@@ -386,6 +386,7 @@ impl RustBridge {
 struct LlamaCppBridge {
     child: Option<Child>,
     url: String,
+    client: reqwest::blocking::Client,
 }
 
 impl LlamaCppBridge {
@@ -393,14 +394,18 @@ impl LlamaCppBridge {
         let url = config.llama_cpp.server_url.clone();
 
         // Check if server is already running
-        let client = reqwest::blocking::Client::builder()
+        let health_client = reqwest::blocking::Client::builder()
             .timeout(std::time::Duration::from_secs(2))
             .build()?;
 
-        if let Ok(resp) = client.get(format!("{}/health", url)).send() {
+        let client = reqwest::blocking::Client::builder()
+            .connection_verbose(false)
+            .build()?;
+
+        if let Ok(resp) = health_client.get(format!("{}/health", url)).send() {
             if resp.status().is_success() {
                 eprintln!("Connected to existing llama-server at {}", url);
-                return Ok(Self { child: None, url });
+                return Ok(Self { child: None, url, client });
             }
         }
 
@@ -469,16 +474,54 @@ impl LlamaCppBridge {
                 std::thread::sleep(std::time::Duration::from_secs(2));
             }
 
-            Ok(Self { child: Some(child), url })
+            Ok(Self { child: Some(child), url, client })
         } else {
             anyhow::bail!("No llama-server running at {} and llama_cpp.server_binary is not set in config.", url);
         }
     }
 }
 
+fn strip_code_fence(text: &str) -> String {
+    let text = text.trim();
+    // Match ```lang\n...\n``` or ```\n...\n```
+    if text.starts_with("```") {
+        let after_open = text.trim_start_matches('`');
+        // Skip optional language tag on the first line
+        let body = if let Some(nl) = after_open.find('\n') {
+            &after_open[nl + 1..]
+        } else {
+            after_open
+        };
+        // Strip trailing ```
+        let body = if let Some(close) = body.rfind("```") {
+            body[..close].trim_end()
+        } else {
+            body.trim_end()
+        };
+        return body.to_string();
+    }
+    // Strip lone backtick wrapping: `command`
+    if text.starts_with('`') && text.ends_with('`') && text.len() > 2 {
+        return text[1..text.len() - 1].to_string();
+    }
+    text.to_string()
+}
+
+fn strip_think_tags(text: &str) -> String {
+    if let Some(start) = text.find("<think>") {
+        if let Some(end) = text.find("</think>") {
+            text[end + 8..].trim().to_string()
+        } else {
+            // Model hit token limit mid-think; return whatever came before <think>
+            text[..start].trim().to_string()
+        }
+    } else {
+        text.to_string()
+    }
+}
+
 impl Bridge for LlamaCppBridge {
     fn query_bool(&mut self, request: &InferenceRequest) -> Result<bool> {
-        let client = reqwest::blocking::Client::new();
         let mut body = serde_json::json!({
             "n_predict": 10,
             "stop": ["<|im_end|>"],
@@ -516,13 +559,13 @@ impl Bridge for LlamaCppBridge {
             _ => anyhow::bail!("Unsupported bool mode"),
         };
 
-        let resp = client.post(format!("{}/completion", self.url))
+        let resp = self.client.post(format!("{}/completion", self.url))
             .json(&body)
             .send()?;
-        
+
         let json: serde_json::Value = resp.json()?;
         let content = json["content"].as_str().unwrap_or("");
-        
+
         Ok(content.to_uppercase().contains("YES"))
     }
 
@@ -553,7 +596,6 @@ impl Bridge for LlamaCppBridge {
             _ => anyhow::bail!("Unsupported text mode"),
         };
 
-        let client = reqwest::blocking::Client::new();
         let body = serde_json::json!({
             "prompt": prompt,
             "n_predict": max_tokens,
@@ -562,7 +604,7 @@ impl Bridge for LlamaCppBridge {
             "cache_prompt": true
         });
 
-        let resp = client.post(format!("{}/completion", self.url))
+        let resp = self.client.post(format!("{}/completion", self.url))
             .json(&body)
             .send()?;
 
@@ -626,31 +668,13 @@ impl Bridge for LlamaCppBridge {
                 io::stdout().flush()?;
             }
             
-            // Clean up thinking tags
+            // Clean up thinking tags and code fences
             let text = full_text.trim().to_string();
-            if let Some(start) = text.find("<think>") {
-                if let Some(end) = text.find("</think>") {
-                    Ok(text[end + 8..].trim().to_string())
-                } else {
-                    // Still thinking when it hit max_tokens
-                    Ok(String::new())
-                }
-            } else {
-                Ok(text)
-            }
+            Ok(strip_code_fence(&strip_think_tags(&text)))
         } else {
             let json: serde_json::Value = resp.json()?;
             let text = json["content"].as_str().unwrap_or("").trim().to_string();
-            if let Some(start) = text.find("<think>") {
-                if let Some(end) = text.find("</think>") {
-                    Ok(text[end + 8..].trim().to_string())
-                } else {
-                    // Still thinking when it hit max_tokens
-                    Ok(String::new())
-                }
-            } else {
-                Ok(text)
-            }
+            Ok(strip_code_fence(&strip_think_tags(&text)))
         }
     }
 }

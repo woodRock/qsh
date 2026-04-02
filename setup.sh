@@ -31,46 +31,9 @@ if ! command -v cmake &> /dev/null; then
     echo "Warning: 'cmake' not found. It will be required if you choose the LlamaCpp engine."
 fi
 
-# 3. Determine Installation Directory
-# We install everything into ~/.local/share/qsh to keep it self-contained
-INSTALL_ROOT="$HOME/.local/share/qsh"
-BIN_DIR="$HOME/.local/bin"
-mkdir -p "$INSTALL_ROOT/src"
-mkdir -p "$BIN_DIR"
-
-# 4. Clone and Build
-TEMP_DIR=$(mktemp -d)
-echo "Cloning repository..."
-git clone https://github.com/woodRock/qsh.git "$TEMP_DIR"
-cd "$TEMP_DIR/qsh"
-
-echo "Building Rust CLI (this may take a minute)..."
-cargo build --release --quiet
-
-# 5. Install Components
-echo "Installing components to $INSTALL_ROOT..."
-cp target/release/qsh "$INSTALL_ROOT/qsh-bin"
-cp src/inference.py "$INSTALL_ROOT/src/inference.py"
-
-# Create a wrapper script in ~/.local/bin/qsh
-cat << EOF > "$BIN_DIR/qsh"
-#!/bin/bash
-exec "$INSTALL_ROOT/qsh-bin" "\$@"
-EOF
-chmod +x "$BIN_DIR/qsh"
-
-# 6. Setup Python Virtual Environment
-echo "Setting up Python environment (qenv)..."
-cd "$INSTALL_ROOT"
-$PYTHON_CMD -m venv qenv
-source qenv/bin/activate
-echo "Installing Python dependencies (transformers, torch, peft, datasets, etc.)..."
-pip install --upgrade pip --quiet
-pip install --quiet git+https://github.com/huggingface/transformers.git qwen-vl-utils torch torchvision accelerate pillow peft datasets
-
-# 7. Setup Wizard (Engine & Model)
+# 3. Setup Wizard (Engine & Model)
 echo ""
-echo "--- 🧙 qsh Setup Wizard ---"
+echo "--- Setup Wizard ---"
 echo "Select your preferred inference engine:"
 echo "1) Python (Transformers) - Default, easiest to setup."
 echo "2) Rust (Candle) - Fast, lightweight, but experimental."
@@ -100,6 +63,54 @@ case $MODEL_CHOICE in
     *) MODEL="Qwen/Qwen3.5-0.8B" ;;
 esac
 
+# Fail fast if cmake is required but missing
+if [ "$ENGINE" == "llamacpp" ] && ! command -v cmake &> /dev/null; then
+    echo "Error: 'cmake' is required to build the LlamaCpp engine. Please install it (e.g., 'brew install cmake') and run setup again."
+    exit 1
+fi
+
+echo ""
+echo "Engine: $ENGINE | Model: $MODEL"
+echo "Starting installation..."
+echo ""
+
+# 4. Determine Installation Directory
+# We install everything into ~/.local/share/qsh to keep it self-contained
+INSTALL_ROOT="$HOME/.local/share/qsh"
+BIN_DIR="$HOME/.local/bin"
+mkdir -p "$INSTALL_ROOT/src"
+mkdir -p "$BIN_DIR"
+
+# 5. Clone and Build
+TEMP_DIR=$(mktemp -d)
+echo "Cloning repository..."
+git clone https://github.com/woodRock/qsh.git "$TEMP_DIR"
+cd "$TEMP_DIR/qsh"
+
+echo "Building Rust CLI (this may take a minute)..."
+cargo build --release --quiet
+
+# 6. Install Components
+echo "Installing components to $INSTALL_ROOT..."
+cp target/release/qsh "$INSTALL_ROOT/qsh-bin"
+cp src/inference.py "$INSTALL_ROOT/src/inference.py"
+
+# Create a wrapper script in ~/.local/bin/qsh
+cat << EOF > "$BIN_DIR/qsh"
+#!/bin/bash
+exec "$INSTALL_ROOT/qsh-bin" "\$@"
+EOF
+chmod +x "$BIN_DIR/qsh"
+
+# 7. Setup Python Virtual Environment
+echo "Setting up Python environment (qenv)..."
+cd "$INSTALL_ROOT"
+$PYTHON_CMD -m venv qenv
+source qenv/bin/activate
+echo "Installing Python dependencies (transformers, torch, peft, datasets, etc.)..."
+pip install --upgrade pip --quiet
+pip install --quiet git+https://github.com/huggingface/transformers.git qwen-vl-utils torch torchvision accelerate pillow peft datasets
+
 # Create initial config
 CONFIG_DIR="$HOME/Library/Application Support/com.qwen.qsh"
 mkdir -p "$CONFIG_DIR"
@@ -118,13 +129,8 @@ flash_attn = true
 EOF
 
 if [ "$ENGINE" == "llamacpp" ]; then
-    if ! command -v cmake &> /dev/null; then
-        echo "Error: 'cmake' is required to build the LlamaCpp engine. Please install it (e.g., 'brew install cmake') and run setup again."
-        exit 1
-    fi
-
     echo ""
-    echo "🏗️  Setting up TurboQuant+ (llama.cpp fork)..."
+    echo "Setting up TurboQuant+ (llama.cpp fork)..."
     TURBO_DIR="$INSTALL_ROOT/llama-cpp-turboquant"
     if [ ! -d "$TURBO_DIR" ]; then
         git clone https://github.com/TheTom/llama-cpp-turboquant.git "$TURBO_DIR"
