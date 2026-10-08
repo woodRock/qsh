@@ -28,7 +28,13 @@ impl Default for Config {
             default_engine: "python".to_string(),
             default_model: "Qwen/Qwen3.5-0.8B".to_string(),
             llama_cpp: LlamaCppConfig {
-                server_url: "http://localhost:8080".to_string(),
+                // Use the literal loopback address, not "localhost": on systems where
+                // "localhost" resolves to ::1 before 127.0.0.1, a request can be routed to
+                // a *different* process that also happens to be listening on this port over
+                // IPv6 (e.g. another app's web UI), instead of to llama-server, which binds
+                // IPv4-only. That silently misroutes the health check and every inference
+                // request without llama-server ever being at fault.
+                server_url: "http://127.0.0.1:8080".to_string(),
                 server_binary: None,
                 model_path: None,
                 mmproj_path: None,
