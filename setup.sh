@@ -32,15 +32,17 @@ echo ""
 echo "--- Setup Wizard ---"
 echo "Select your preferred Qwen 3.5 model size:"
 echo "1) 0.8B - ~0.5GB disk, ~1GB RAM. Fast, for basic shell commands. Fits any M-series Mac."
-echo "2) 9B   - ~5.5GB disk, ~8GB RAM (16GB recommended). Balanced for most tasks."
-echo "3) 27B  - ~16GB disk, ~20GB RAM (32GB+ recommended). Expert reasoning, complex scripting."
-read -p "Model [1-3, default: 1]: " MODEL_CHOICE
+echo "2) 2B   - ~1.3GB disk, ~2GB RAM. Edge-device tier, still very fast."
+echo "3) 4B   - ~2.5GB disk, ~4GB RAM. Lightweight-agent tier, noticeably stronger reasoning."
+echo "4) 9B   - ~5.5GB disk, ~8GB RAM (16GB recommended). Closes the gap with much larger models."
+read -p "Model [1-4, default: 1]: " MODEL_CHOICE
 MODEL_CHOICE=${MODEL_CHOICE:-1}
 
 case $MODEL_CHOICE in
     1) MODEL="Qwen/Qwen3.5-0.8B" ;;
-    2) MODEL="Qwen/Qwen3.5-9B" ;;
-    3) MODEL="Qwen/Qwen3.5-27B" ;;
+    2) MODEL="Qwen/Qwen3.5-2B" ;;
+    3) MODEL="Qwen/Qwen3.5-4B" ;;
+    4) MODEL="Qwen/Qwen3.5-9B" ;;
     *) MODEL="Qwen/Qwen3.5-0.8B" ;;
 esac
 
