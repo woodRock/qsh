@@ -4,7 +4,7 @@ use colored::Colorize;
 use std::io::{self, BufRead, Write};
 use std::process::Command;
 
-use qsh::bridge::{Bridge, InferenceRequest, LlamaCppBridge, PythonBridge, RustBridge};
+use qsh::bridge::{Bridge, InferenceRequest, PythonBridge};
 use qsh::config::Config;
 use qsh::history::History;
 use qsh::safety;
@@ -20,10 +20,6 @@ struct Cli {
     #[arg(trailing_var_arg = true, num_args = 0..)]
     prompt: Vec<String>,
 
-    /// The engine to use (python, rust, or llamacpp)
-    #[arg(short, long)]
-    engine: Option<Engine>,
-
     /// The model ID to use from HuggingFace
     #[arg(short, long)]
     model: Option<String>,
@@ -31,13 +27,6 @@ struct Cli {
     /// Clear the chat history
     #[arg(long)]
     clear_history: bool,
-}
-
-#[derive(clap::ValueEnum, Clone, Debug, PartialEq)]
-enum Engine {
-    Python,
-    Rust,
-    LlamaCpp,
 }
 
 #[derive(Subcommand)]
@@ -68,19 +57,8 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    let engine = cli.engine.unwrap_or(match config.default_engine.as_str() {
-        "rust" => Engine::Rust,
-        "llamacpp" => Engine::LlamaCpp,
-        _ => Engine::Python,
-    });
-
     let model_id = cli.model.as_deref().or(Some(&config.default_model));
-
-    let mut bridge: Box<dyn Bridge> = match engine {
-        Engine::Python => Box::new(PythonBridge::spawn(model_id)?),
-        Engine::Rust => Box::new(RustBridge::spawn(model_id)?),
-        Engine::LlamaCpp => Box::new(LlamaCppBridge::spawn(&config)?),
-    };
+    let mut bridge: Box<dyn Bridge> = Box::new(PythonBridge::spawn(model_id)?);
 
     match cli.command {
         Some(Commands::Lora) => {

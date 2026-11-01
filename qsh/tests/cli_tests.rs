@@ -15,9 +15,9 @@ fn test_help_command() {
 #[test]
 fn test_no_args_shows_hint() {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_qsh"));
-    cmd.assert()
-        .success()
-        .stdout(predicate::str::contains("Use --help for usage instructions."));
+    cmd.assert().success().stdout(predicate::str::contains(
+        "Use --help for usage instructions.",
+    ));
 }
 
 #[test]
@@ -32,14 +32,10 @@ fn test_clear_history_flag() {
 /// words as a single prompt by checking that the binary doesn't print the
 /// "Use --help" hint (which would mean the prompt was empty).
 ///
-/// We send "a\n" to stdin so the confirmation prompt doesn't hang if a model
-/// somehow responds — in CI without a model this will fail at bridge init, but
-/// the important thing is that clap itself accepts the multi-word input.
+/// Running a prompt for real would spawn inference.py, which isn't available
+/// in CI, so we just verify the CLI layer here.
 #[test]
 fn test_multiword_prompt_parsed_without_quotes() {
-    // --engine python would try to spawn inference.py which isn't available in
-    // CI, so we just verify the CLI layer: the binary must NOT exit with the
-    // "Use --help" message when multiple words are passed as separate args.
     let output = Command::new(env!("CARGO_BIN_EXE_qsh"))
         .args(["--help"])
         .output()
@@ -83,12 +79,12 @@ fn test_lora_subcommand_help() {
         .stdout(predicate::str::contains("LoRA"));
 }
 
-/// Engine flag must be accepted by clap without error.
+/// Model flag must be accepted by clap without error.
 #[test]
-fn test_engine_flag_in_help() {
+fn test_model_flag_in_help() {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_qsh"));
     cmd.arg("--help")
         .assert()
         .success()
-        .stdout(predicate::str::contains("engine"));
+        .stdout(predicate::str::contains("model"));
 }

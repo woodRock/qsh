@@ -9,7 +9,7 @@ if ! command -v cargo &> /dev/null; then
     exit 1
 fi
 
-# 2. Check for Python 3.10+, cmake (for llamacpp)
+# 2. Check for Python 3.10+
 PYTHON_CMD=""
 for cmd in python3.14 python3.13 python3.12 python3.11 python3.10 python3; do
     if command -v $cmd &> /dev/null; then
@@ -27,28 +27,9 @@ if [ -z "$PYTHON_CMD" ]; then
     exit 1
 fi
 
-if ! command -v cmake &> /dev/null; then
-    echo "Warning: 'cmake' not found. It will be required if you choose the LlamaCpp engine."
-fi
-
-# 3. Setup Wizard (Engine & Model)
+# 3. Setup Wizard (Model)
 echo ""
 echo "--- Setup Wizard ---"
-echo "Select your preferred inference engine:"
-echo "1) Python (Transformers) - Default, easiest to setup."
-echo "2) Rust (Candle) - Fast, lightweight, but experimental."
-echo "3) LlamaCpp (TurboQuant) - Highest performance on Apple Silicon (M2+), requires manual build of the turboquant_plus fork."
-read -p "Engine [1-3, default: 1]: " ENGINE_CHOICE
-ENGINE_CHOICE=${ENGINE_CHOICE:-1}
-
-case $ENGINE_CHOICE in
-    1) ENGINE="python" ;;
-    2) ENGINE="rust" ;;
-    3) ENGINE="llamacpp" ;;
-    *) ENGINE="python" ;;
-esac
-
-echo ""
 echo "Select your preferred Qwen 3.5 model size:"
 echo "1) 0.8B - ~0.5GB disk, ~1GB RAM. Fast, for basic shell commands. Fits any M-series Mac."
 echo "2) 9B   - ~5.5GB disk, ~8GB RAM (16GB recommended). Balanced for most tasks."
@@ -63,14 +44,8 @@ case $MODEL_CHOICE in
     *) MODEL="Qwen/Qwen3.5-0.8B" ;;
 esac
 
-# Fail fast if cmake is required but missing
-if [ "$ENGINE" == "llamacpp" ] && ! command -v cmake &> /dev/null; then
-    echo "Error: 'cmake' is required to build the LlamaCpp engine. Please install it (e.g., 'brew install cmake') and run setup again."
-    exit 1
-fi
-
 echo ""
-echo "Engine: $ENGINE | Model: $MODEL"
+echo "Model: $MODEL"
 echo "Starting installation..."
 echo ""
 
@@ -117,84 +92,9 @@ mkdir -p "$CONFIG_DIR"
 CONFIG_FILE="$CONFIG_DIR/config.toml"
 
 cat << EOF > "$CONFIG_FILE"
-default_engine = "$ENGINE"
 default_model = "$MODEL"
 safety_check = true
-
-[llama_cpp]
-server_url = "http://localhost:8080"
-turbo_k = "q8_0"
-turbo_v = "turbo4"
-flash_attn = true
 EOF
-
-if [ "$ENGINE" == "llamacpp" ]; then
-    echo ""
-    echo "Setting up TurboQuant+ (llama.cpp fork)..."
-    TURBO_DIR="$INSTALL_ROOT/llama-cpp-turboquant"
-    if [ ! -d "$TURBO_DIR" ]; then
-        git clone https://github.com/TheTom/llama-cpp-turboquant.git "$TURBO_DIR"
-    fi
-    
-    cd "$TURBO_DIR"
-    git checkout feature/turboquant-kv-cache --quiet
-    
-    echo "Building llama-server with Metal support (this may take a few minutes)..."
-    cmake -B build -DGGML_METAL=ON -DGGML_METAL_EMBED_LIBRARY=ON -DCMAKE_BUILD_TYPE=Release
-    cmake --build build --config Release --target llama-server -j$(sysctl -n hw.ncpu)
-
-    SERVER_BIN="$TURBO_DIR/build/bin/llama-server"
-    
-    # 7.2 Download GGUF Model
-    MODEL_FILENAME=$(echo "$MODEL" | sed 's/.*\///')-Q4_K_M.gguf
-    # Note: Unsloth uses a different repo naming convention
-    REPO_NAME="unsloth/$(echo "$MODEL" | sed 's/.*\///')-GGUF"
-    MODEL_URL="https://huggingface.co/$REPO_NAME/resolve/main/$MODEL_FILENAME"
-    MODEL_DEST="$INSTALL_ROOT/models/$MODEL_FILENAME"
-    
-    # 7.3 Download Vision Projector (mmproj)
-    MMPROJ_FILENAME="mmproj-BF16.gguf"
-    MMPROJ_URL="https://huggingface.co/$REPO_NAME/resolve/main/$MMPROJ_FILENAME"
-    MMPROJ_DEST="$INSTALL_ROOT/models/$MMPROJ_FILENAME"
-    
-    mkdir -p "$INSTALL_ROOT/models"
-    
-    if [ ! -f "$MODEL_DEST" ]; then
-        echo ""
-        echo "📥 Downloading $MODEL_FILENAME (~$(case $MODEL_CHOICE in 1) echo "0.5GB" ;; 2) echo "5.5GB" ;; 3) echo "16GB" ;; esac))..."
-        curl -L "$MODEL_URL" -o "$MODEL_DEST"
-    else
-        echo ""
-        echo "✅ Model $MODEL_FILENAME already exists at $MODEL_DEST"
-    fi
-
-    if [ ! -f "$MMPROJ_DEST" ]; then
-        echo "📥 Downloading Vision Projector $MMPROJ_FILENAME..."
-        curl -L "$MMPROJ_URL" -o "$MMPROJ_DEST"
-    else
-        echo "✅ Vision Projector $MMPROJ_FILENAME already exists."
-    fi
-
-    # Update config with binary, model path and mmproj
-    cat << EOF > "$CONFIG_FILE"
-default_engine = "$ENGINE"
-default_model = "$MODEL"
-safety_check = true
-
-[llama_cpp]
-server_url = "http://localhost:8080"
-server_binary = "$SERVER_BIN"
-model_path = "$MODEL_DEST"
-mmproj_path = "$MMPROJ_DEST"
-turbo_k = "q8_0"
-turbo_v = "turbo4"
-flash_attn = true
-EOF
-
-    echo ""
-    echo "✅ TurboQuant+ built successfully at $SERVER_BIN"
-    echo "✅ Model downloaded and configured at $MODEL_DEST"
-fi
 
 # Cleanup
 rm -rf "$TEMP_DIR"

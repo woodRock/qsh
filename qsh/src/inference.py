@@ -22,7 +22,7 @@ warnings.filterwarnings("ignore")
 logging.disable(logging.WARNING)
 
 from PIL import Image
-from transformers import Qwen3_5ForConditionalGeneration, AutoTokenizer, AutoProcessor, TrainingArguments, Trainer, TrainerCallback
+from transformers import AutoModelForImageTextToText, AutoTokenizer, AutoProcessor, TrainingArguments, Trainer, TrainerCallback
 from qwen_vl_utils import process_vision_info
 from peft import LoraConfig, get_peft_model, PeftModel
 from datasets import Dataset
@@ -38,9 +38,11 @@ LORA_PATH = os.path.expanduser("~/.local/share/qsh/lora_weights")
 print(json.dumps({"info": f"Loading model {model_name} onto {device}..."}))
 sys.stdout.flush()
 
-# Load model to device
+# Load model to device. AutoModelForImageTextToText resolves to whatever
+# architecture class the model's config declares, so newer Qwen (or other
+# vision-language) releases work here without code changes.
 try:
-    model = Qwen3_5ForConditionalGeneration.from_pretrained(
+    model = AutoModelForImageTextToText.from_pretrained(
         model_name, torch_dtype=dtype, device_map={"": device}, trust_remote_code=True
     )
     if os.path.exists(LORA_PATH) and os.path.exists(os.path.join(LORA_PATH, "adapter_config.json")):

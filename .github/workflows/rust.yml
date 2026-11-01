@@ -40,5 +40,5 @@ jobs:
       working-directory: qsh
 
     - name: Run tests
-      run: cargo test --verbose --lib --test config_tests --test history_tests --test model_tests --test safety_tests
+      run: cargo test --verbose --lib --test config_tests --test history_tests --test safety_tests
       working-directory: qsh

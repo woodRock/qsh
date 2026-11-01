@@ -29,6 +29,7 @@ curl -sSL https://raw.githubusercontent.com/woodRock/qsh/main/setup.sh | sh
 - **Multimodal Vision Filter:** Use visual reasoning to filter files. Analyze a stream of image paths with natural language queries.
 - **Hardware Accelerated:** Automatically leverages **MPS** (Apple Silicon) or **CUDA** (NVIDIA) via PyTorch for ultra-fast inference.
 - **Hybrid Architecture:** Optimized Rust binary for the CLI interface and a dedicated Python virtual environment for heavy-lifting inference.
+- **Model Agnostic:** Swap in any `transformers`-compatible HuggingFace model (including newer Qwen releases) via `--model` or the config file — no code changes required.
 
 ---
 
@@ -52,6 +53,13 @@ Filter image paths using visual intelligence.
 ```bash
 ls screenshots/*.png | qsh vision "is there code visible in this image?"
 ```
+
+### 4. Using a Different Model
+`qsh` runs on `transformers`, so any compatible HuggingFace model ID works, including newer Qwen releases as they come out.
+```bash
+qsh --model Qwen/Qwen3.5-9B "Find all files larger than 100MB"
+```
+Set `default_model` in `~/Library/Application Support/com.qwen.qsh/config.toml` (macOS) to change it permanently.
 
 ---
 

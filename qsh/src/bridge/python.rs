@@ -42,15 +42,14 @@ impl PythonBridge {
                 .join("src/inference.py");
         }
 
-        if !python_path.exists() {
-            if let Some(project_root) = exe_dir
+        if !python_path.exists()
+            && let Some(project_root) = exe_dir
                 .parent()
                 .and_then(|p| p.parent())
                 .and_then(|p| p.parent())
-            {
-                python_path = project_root.join("qenv/bin/python3");
-                inference_path = project_root.join("qsh/src/inference.py");
-            }
+        {
+            python_path = project_root.join("qenv/bin/python3");
+            inference_path = project_root.join("qsh/src/inference.py");
         }
 
         if !python_path.exists() {
@@ -59,8 +58,7 @@ impl PythonBridge {
         }
 
         if !python_path.exists() {
-            python_path =
-                std::path::PathBuf::from("/Users/woodj/Desktop/qsh/qenv/bin/python3");
+            python_path = std::path::PathBuf::from("/Users/woodj/Desktop/qsh/qenv/bin/python3");
             inference_path =
                 std::path::PathBuf::from("/Users/woodj/Desktop/qsh/qsh/src/inference.py");
         }
@@ -173,10 +171,10 @@ impl Bridge for PythonBridge {
                                     buffer = buffer[start + 7..].to_string();
                                 } else {
                                     let mut print_until = buffer.len();
-                                    if let Some(last_lt) = buffer.rfind('<') {
-                                        if "<think>".starts_with(&buffer[last_lt..]) {
-                                            print_until = last_lt;
-                                        }
+                                    if let Some(last_lt) = buffer.rfind('<')
+                                        && "<think>".starts_with(&buffer[last_lt..])
+                                    {
+                                        print_until = last_lt;
                                     }
                                     if print_until > 0 {
                                         print!("{}", &buffer[..print_until]);
@@ -190,10 +188,10 @@ impl Bridge for PythonBridge {
                                 buffer = buffer[end + 8..].to_string();
                             } else {
                                 let mut keep_from = buffer.len();
-                                if let Some(last_lt) = buffer.rfind('<') {
-                                    if "</think>".starts_with(&buffer[last_lt..]) {
-                                        keep_from = last_lt;
-                                    }
+                                if let Some(last_lt) = buffer.rfind('<')
+                                    && "</think>".starts_with(&buffer[last_lt..])
+                                {
+                                    keep_from = last_lt;
                                 }
                                 buffer = buffer[keep_from..].to_string();
                                 break;
