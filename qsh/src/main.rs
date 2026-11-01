@@ -161,13 +161,13 @@ fn main() -> Result<()> {
                 history: Some(recent),
             };
 
-            print!("\nSuggested Command: ");
+            print!("\n{} ", "Suggested Command:".bold().cyan());
             io::stdout().flush()?;
             let command = bridge.query_text(&request, true)?;
             println!();
 
             if command.is_empty() {
-                println!("Error: Model failed to generate a command.");
+                println!("{}", "Error: Model failed to generate a command.".red());
                 return Ok(());
             }
 
@@ -187,19 +187,24 @@ fn main() -> Result<()> {
                 io::stdin().read_line(&mut confirm)?;
                 if !confirm.trim().to_lowercase().starts_with('y') {
                     history.update_last_outcome("abort")?;
-                    println!("Aborted.");
+                    println!("{}", "Aborted.".yellow());
                     return Ok(());
                 }
             }
 
             loop {
-                print!("[E]xecute, [e]xplain, [a]bort? ");
+                print!(
+                    "{} {} {} ",
+                    "[R]un".bold().green(),
+                    "[X]plain".bold().blue(),
+                    "[A]bort".bold().red()
+                );
                 io::stdout().flush()?;
                 let mut input = String::new();
                 io::stdin().read_line(&mut input)?;
-                let choice = input.trim();
+                let choice = input.trim().to_lowercase();
 
-                if choice == "e" {
+                if choice == "x" {
                     let req = InferenceRequest {
                         mode: "explain".to_string(),
                         query: None,
@@ -209,12 +214,12 @@ fn main() -> Result<()> {
                         command: Some(command.clone()),
                         history: None,
                     };
-                    println!("\n> Explanation:");
+                    println!("\n{}", "> Explanation:".bold().blue());
                     bridge.query_text(&req, true)?;
                     println!("\n");
                     continue;
-                } else if choice == "E" || choice.is_empty() {
-                    println!("Executing: {}", command);
+                } else if choice == "r" || choice.is_empty() {
+                    println!("{} {}", "Executing:".bold().green(), command);
                     history.update_last_outcome("execute")?;
                     Command::new("bash")
                         .arg("-c")
@@ -222,12 +227,12 @@ fn main() -> Result<()> {
                         .spawn()?
                         .wait()?;
                     break;
-                } else if choice.to_lowercase() == "a" {
+                } else if choice == "a" {
                     history.update_last_outcome("abort")?;
-                    println!("Aborted.");
+                    println!("{}", "Aborted.".yellow());
                     break;
                 } else {
-                    println!("Invalid option.");
+                    println!("{}", "Invalid option. Please enter r, x, or a.".yellow());
                 }
             }
         }

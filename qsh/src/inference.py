@@ -1,15 +1,25 @@
 import sys
+import os
+
+# Must be set before torch/transformers/huggingface_hub are imported, since
+# that's when each library reads them to configure its own logging/progress bars.
+os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+os.environ["HF_HUB_DISABLE_PROGRESS_BARS"] = "1"
+os.environ["TRANSFORMERS_VERBOSITY"] = "error"
+os.environ["TRANSFORMERS_NO_ADVISORY_WARNINGS"] = "1"
+
 import torch
 import json
-import os
 import warnings
 import logging
 import sqlite3
 
-# Suppress warnings
+# Suppress warnings. logging.disable() is the catch-all: kernel fallback
+# notices and the HF Hub "unauthenticated requests" notice are logged through
+# loggers other than "transformers" (huggingface_hub, or a dynamically named
+# trust_remote_code module), so targeting "transformers" alone misses them.
 warnings.filterwarnings("ignore")
-logging.getLogger("transformers").setLevel(logging.ERROR)
-os.environ["HF_HUB_DISABLE_SYMLINKS_WARNING"] = "1"
+logging.disable(logging.WARNING)
 
 from PIL import Image
 from transformers import Qwen3_5ForConditionalGeneration, AutoTokenizer, AutoProcessor, TrainingArguments, Trainer, TrainerCallback

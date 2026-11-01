@@ -39,7 +39,7 @@ Convert your intent to valid Bash commands instantly.
 ```bash
 qsh "Find all files larger than 100MB and list them by date"
 ```
-> `[E]xecute? [e]xplain? [A]bort?`
+> `[R]un  [X]plain  [A]bort`
 
 ### 2. Semantic Pipe (`filter`)
 Filter text data based on high-level concepts.
