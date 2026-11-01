@@ -61,6 +61,24 @@ qsh --model Qwen/Qwen3.5-9B "Find all files larger than 100MB"
 ```
 Set `default_model` in `~/Library/Application Support/com.qwen.qsh/config.toml` (macOS) to change it permanently.
 
+### 5. Scripting (`-y`/`--yes`)
+Skip the Run/Explain/Abort prompt and execute the suggested command immediately — useful for scripts and automation. The destructive-command safety check still runs and is logged, just not interactively confirmed.
+```bash
+qsh -y "list files larger than 100MB"
+```
+
+### 6. Reviewing History
+```bash
+qsh history        # last 20 prompts/commands and their outcome
+qsh history 50      # last 50
+qsh --clear-history  # wipe it
+```
+
+### 7. Shell Completions
+```bash
+qsh completions zsh > ~/.zfunc/_qsh   # or bash/fish/elvish/powershell
+```
+
 ---
 
 ## 🏗️ Technical Implementation

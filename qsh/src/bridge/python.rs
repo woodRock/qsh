@@ -1,8 +1,76 @@
 use anyhow::{Context, Result};
-use std::io::{self, BufRead, Write};
+use std::io::{self, BufRead, IsTerminal, Write};
 use std::process::{Child, Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 use super::{Bridge, InferenceRequest, InferenceResponse};
+
+const SPINNER_FRAMES: [char; 10] = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+
+/// Ticks a "<frame> <label> (<elapsed>s)" line on stderr until told to stop,
+/// so model loading (which can take 30-60s for larger models) doesn't look
+/// like qsh has hung. Only runs when stderr is an interactive terminal.
+struct LoadingSpinner {
+    label: Arc<Mutex<String>>,
+    stop: Arc<AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl LoadingSpinner {
+    fn start(initial_label: &str) -> Self {
+        let label = Arc::new(Mutex::new(initial_label.to_string()));
+        let stop = Arc::new(AtomicBool::new(false));
+
+        let handle = if io::stderr().is_terminal() {
+            let label = label.clone();
+            let stop = stop.clone();
+            Some(std::thread::spawn(move || {
+                let start = Instant::now();
+                let mut i = 0usize;
+                while !stop.load(Ordering::Relaxed) {
+                    let text = label.lock().unwrap().clone();
+                    eprint!(
+                        "\r\x1b[2K{} {} ({}s)",
+                        SPINNER_FRAMES[i % SPINNER_FRAMES.len()],
+                        text,
+                        start.elapsed().as_secs()
+                    );
+                    let _ = io::stderr().flush();
+                    i += 1;
+                    std::thread::sleep(std::time::Duration::from_millis(120));
+                }
+                eprint!("\r\x1b[2K");
+                let _ = io::stderr().flush();
+            }))
+        } else {
+            eprintln!("{}", initial_label);
+            None
+        };
+
+        Self {
+            label,
+            stop,
+            handle,
+        }
+    }
+
+    fn set_label(&self, text: &str) {
+        if self.handle.is_some() {
+            *self.label.lock().unwrap() = text.to_string();
+        } else {
+            eprintln!("{}", text);
+        }
+    }
+
+    fn stop(mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
 
 pub struct PythonBridge {
     child: Child,
@@ -58,9 +126,10 @@ impl PythonBridge {
         }
 
         if !python_path.exists() {
-            python_path = std::path::PathBuf::from("/Users/woodj/Desktop/qsh/qenv/bin/python3");
-            inference_path =
-                std::path::PathBuf::from("/Users/woodj/Desktop/qsh/qsh/src/inference.py");
+            anyhow::bail!(
+                "Could not find the Python inference environment (qenv/bin/python3). \
+                 Run ./setup.sh from the repo root, or reinstall qsh."
+            );
         }
 
         let mut cmd = Command::new(&python_path);
@@ -81,7 +150,10 @@ impl PythonBridge {
         let stdout = child.stdout.take().context("Failed to capture stdout")?;
         let mut reader = io::BufReader::new(stdout);
 
-        // Wait for the model-loaded signal before returning
+        // Wait for the model-loaded signal before returning. Model loading
+        // can take 30-60s for the larger Qwen3.5 sizes, so show a spinner
+        // rather than leaving the terminal looking stuck.
+        let spinner = LoadingSpinner::start("Starting inference engine...");
         loop {
             let mut line = String::new();
             if reader.read_line(&mut line)? == 0 {
@@ -89,18 +161,20 @@ impl PythonBridge {
             }
             if let Ok(resp) = serde_json::from_str::<InferenceResponse>(&line) {
                 if let Some(info) = resp.info {
-                    eprintln!("Info: {}", info);
+                    spinner.set_label(&info);
                     if info == "Model loaded successfully!" {
                         break;
                     }
                 }
                 if let Some(err) = resp.error {
+                    spinner.stop();
                     anyhow::bail!("Python Init Error: {}", err);
                 }
             } else {
-                eprint!("{}", line);
+                spinner.set_label(line.trim());
             }
         }
+        spinner.stop();
 
         Ok(Self { child, reader })
     }

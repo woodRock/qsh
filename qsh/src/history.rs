@@ -7,6 +7,13 @@ pub struct History {
     conn: Connection,
 }
 
+pub struct HistoryEntry {
+    pub role: String,
+    pub content: String,
+    pub outcome: String,
+    pub timestamp: String,
+}
+
 impl History {
     pub fn open() -> Result<Self> {
         Self::open_at(Self::get_path())
@@ -78,6 +85,27 @@ impl History {
         // Reverse because we want them in chronological order for the model
         messages.reverse();
         Ok(messages)
+    }
+
+    pub fn get_entries(&self, limit: usize) -> Result<Vec<HistoryEntry>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT role, content, outcome, timestamp FROM history ORDER BY id DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit], |row| {
+            Ok(HistoryEntry {
+                role: row.get(0)?,
+                content: row.get(1)?,
+                outcome: row.get(2)?,
+                timestamp: row.get(3)?,
+            })
+        })?;
+
+        let mut entries = Vec::new();
+        for row in rows {
+            entries.push(row?);
+        }
+        entries.reverse();
+        Ok(entries)
     }
 
     pub fn clear(&self) -> Result<()> {

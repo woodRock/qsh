@@ -14,9 +14,10 @@ fn test_load_save_config() {
     let temp_file = NamedTempFile::new().unwrap();
     let path = temp_file.path().to_path_buf();
 
-    let mut config = Config::default();
-    config.default_model = "Custom/Model".to_string();
-    config.safety_check = false;
+    let config = Config {
+        default_model: "Custom/Model".to_string(),
+        safety_check: false,
+    };
 
     config.save_to(path.clone()).expect("Failed to save config");
 

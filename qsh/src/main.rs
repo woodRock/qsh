@@ -1,5 +1,5 @@
 use anyhow::Result;
-use clap::{Parser, Subcommand};
+use clap::{CommandFactory, Parser, Subcommand};
 use colored::Colorize;
 use std::io::{self, BufRead, Write};
 use std::process::Command;
@@ -27,6 +27,10 @@ struct Cli {
     /// Clear the chat history
     #[arg(long)]
     clear_history: bool,
+
+    /// Skip confirmation prompts and run the suggested command immediately
+    #[arg(short = 'y', long)]
+    yes: bool,
 }
 
 #[derive(Subcommand)]
@@ -43,17 +47,61 @@ enum Commands {
     },
     /// Fine-tune the model with LoRA based on your execution history.
     Lora,
+    /// Show recent prompt/command history.
+    History {
+        /// Number of recent entries to show
+        #[arg(default_value_t = 20)]
+        limit: usize,
+    },
+    /// Generate a shell completion script (e.g. `qsh completions zsh > ~/.zfunc/_qsh`).
+    Completions { shell: clap_complete::Shell },
 }
 
-fn main() -> Result<()> {
+fn main() {
     colored::control::set_override(true);
+    if let Err(e) = run() {
+        eprintln!("{} {}", "Error:".bold().red(), e);
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<()> {
     let cli = Cli::parse();
+
+    if let Some(Commands::Completions { shell }) = &cli.command {
+        clap_complete::generate(*shell, &mut Cli::command(), "qsh", &mut io::stdout());
+        return Ok(());
+    }
+
     let config = Config::load();
     let history = History::open()?;
 
     if cli.clear_history {
         history.clear()?;
         println!("History cleared.");
+        return Ok(());
+    }
+
+    if let Some(Commands::History { limit }) = &cli.command {
+        let entries = history.get_entries(*limit)?;
+        if entries.is_empty() {
+            println!("No history yet.");
+        } else {
+            for entry in entries {
+                let marker = match entry.outcome.as_str() {
+                    "execute" => "✔".green(),
+                    "abort" => "✘".yellow(),
+                    _ => "·".dimmed(),
+                };
+                println!(
+                    "{} {} {} {}",
+                    marker,
+                    entry.timestamp.dimmed(),
+                    format!("{}:", entry.role).bold(),
+                    entry.content
+                );
+            }
+        }
         return Ok(());
     }
 
@@ -141,7 +189,10 @@ fn main() -> Result<()> {
 
             print!("\n{} ", "Suggested Command:".bold().cyan());
             io::stdout().flush()?;
+            print!("\x1b[1;32m"); // bold green for the streamed command text
+            io::stdout().flush()?;
             let command = bridge.query_text(&request, true)?;
+            print!("\x1b[0m");
             println!();
 
             if command.is_empty() {
@@ -154,20 +205,35 @@ fn main() -> Result<()> {
 
             if config.safety_check && !safety::check_safety(&command) {
                 safety::print_warning(&command);
-                print!(
-                    "{}",
-                    "Are you absolutely sure you want to proceed? [y/N] "
-                        .bold()
-                        .red()
-                );
-                io::stdout().flush()?;
-                let mut confirm = String::new();
-                io::stdin().read_line(&mut confirm)?;
-                if !confirm.trim().to_lowercase().starts_with('y') {
-                    history.update_last_outcome("abort")?;
-                    println!("{}", "Aborted.".yellow());
-                    return Ok(());
+                if cli.yes {
+                    println!("{}", "Proceeding automatically (-y was passed).".yellow());
+                } else {
+                    print!(
+                        "{}",
+                        "Are you absolutely sure you want to proceed? [y/N] "
+                            .bold()
+                            .red()
+                    );
+                    io::stdout().flush()?;
+                    let mut confirm = String::new();
+                    io::stdin().read_line(&mut confirm)?;
+                    if !confirm.trim().to_lowercase().starts_with('y') {
+                        history.update_last_outcome("abort")?;
+                        println!("{}", "Aborted.".yellow());
+                        return Ok(());
+                    }
                 }
+            }
+
+            if cli.yes {
+                println!("{} {}", "Executing:".bold().green(), command);
+                history.update_last_outcome("execute")?;
+                Command::new("bash")
+                    .arg("-c")
+                    .arg(&command)
+                    .spawn()?
+                    .wait()?;
+                return Ok(());
             }
 
             loop {
@@ -213,6 +279,9 @@ fn main() -> Result<()> {
                     println!("{}", "Invalid option. Please enter r, x, or a.".yellow());
                 }
             }
+        }
+        Some(Commands::History { .. }) | Some(Commands::Completions { .. }) => {
+            unreachable!("handled earlier in run(), before the bridge was spawned")
         }
     }
     Ok(())

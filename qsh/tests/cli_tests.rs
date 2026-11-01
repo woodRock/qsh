@@ -88,3 +88,31 @@ fn test_model_flag_in_help() {
         .success()
         .stdout(predicate::str::contains("model"));
 }
+
+/// -y/--yes must be accepted by clap without error.
+#[test]
+fn test_yes_flag_in_help() {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_qsh"));
+    cmd.arg("--help")
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("--yes"));
+}
+
+/// qsh history must run without needing the Python engine (no args given).
+#[test]
+fn test_history_subcommand_runs_without_model() {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_qsh"));
+    cmd.arg("history").assert().success();
+}
+
+/// qsh completions <shell> must print a completion script without needing
+/// the Python engine.
+#[test]
+fn test_completions_subcommand() {
+    let mut cmd = Command::new(env!("CARGO_BIN_EXE_qsh"));
+    cmd.args(["completions", "zsh"])
+        .assert()
+        .success()
+        .stdout(predicate::str::contains("#compdef qsh"));
+}
